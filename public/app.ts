@@ -1,4 +1,5 @@
 import { parentFolder, segmentsFrom } from "../lib/extract.ts";
+import { pathUnder } from "../lib/under.ts";
 import {
   attachChild,
   cameraPanToInclude,
@@ -7,132 +8,57 @@ import {
   fitCameraToBounds,
   hopsBetween,
   layoutTrail,
-  type Camera,
   type GraphLayout,
   type NodePos,
 } from "../lib/layout.ts";
 import { buildShowcaseTree, showcaseWalk } from "../lib/demo-tree.ts";
 import {
   DEFAULT_ACCENT,
-  INK,
-  PALETTE,
-  SHAPES,
-  WHITE,
   cssEscape,
   easeInOut,
   edgeKey,
-  folderTail,
-  nearestPalette,
-  sessionLabel,
   shortLabel,
   svgEl as el,
   svgNS,
   whisperName,
   type AgentMark,
-  type AppState,
-  type SessionListItem,
 } from "./hud.ts";
-
-const reduceMotion = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
-
-const els = {
-  svg: document.querySelector("#map") as SVGSVGElement | null,
-  session: document.getElementById("session") as HTMLSelectElement | null,
-  demo: document.getElementById("btn-demo") as HTMLElement | null,
-  liveStatus: document.getElementById("live"),
-  peek: document.getElementById("peek"),
-  menu: document.getElementById("overflow-menu") as HTMLElement | null,
-  stage: document.getElementById("stage") as HTMLElement | null,
-  palette: document.getElementById("palette"),
-  colorPick: document.getElementById("color-pick"),
-  colorCurrent: document.getElementById("color-current") as HTMLElement | null,
-  opacity: document.getElementById("opacity") as HTMLInputElement | null,
-  opacityOut: document.getElementById("opacity-out"),
-  themeSeg: document.getElementById("theme-seg"),
-  shape: document.getElementById("shape") as HTMLElement | null,
-  center: document.getElementById("btn-center") as HTMLElement | null,
-  face: document.getElementById("agent-face"),
-  faceWrap: document.getElementById("agent-face-wrap") as HTMLElement | null,
-  faceBtn: document.getElementById("agent-face-btn") as HTMLElement | null,
-  faceMenu: document.getElementById("face-menu") as HTMLElement | null,
-  settings: document.getElementById("settings") as HTMLElement | null,
-  settingsBtn: document.getElementById("btn-settings") as HTMLButtonElement | null,
-  settingsTray: document.getElementById("settings-tray") as HTMLElement | null,
-  settingsPicker: document.getElementById("settings-picker") as HTMLElement | null,
-  instrument: document.querySelector(".instrument") as HTMLElement | null,
-  followSeg: document.getElementById("follow-seg"),
-  sessionPicker: document.getElementById("session-picker") as HTMLElement | null,
-  sessionSearch: document.getElementById("session-search") as HTMLInputElement | null,
-  sessionList: document.getElementById("session-list") as HTMLElement | null,
-  pickerScrim: document.getElementById("picker-scrim") as HTMLElement | null,
-  log: document.getElementById("log"),
-};
-
-const camera: Camera = { x: 0, y: 0, k: 1 };
-let userMovedCamera = false;
-let pendingCenter = false;
-const state: AppState = {
-  mode: "live",
-  rootId: "",
-  rootPath: "",
-  nodes: new Map(),
-  parentOf: new Map(),
-  expanded: new Set(),
-  lastFocus: new Map(),
-  userPins: new Set(),
-  visited: new Map(),
-  visitedEdges: new Set(),
-  agents: new Map(),
-  hidden: new Map(),
-  shown: new Map(),
-  layout: null,
-  log: [],
-  accent: DEFAULT_ACCENT,
-  agentSymbol: null,
-  shape: "tree",
-  theme: "system",
-  opacity: 0.96,
-  graphFollow: "focus",
-  settingsHidden: false,
-  sessionId: null,
-  sessions: [],
-};
-
-const queues = new Map<string, Promise<unknown>>();
-let seq = 0;
-let demoTimer = 0;
-
-const defs = el("defs", {}, els.svg);
-const cameraG = el("g", { id: "camera" }, els.svg);
-const edgeG = el("g", { id: "edges" }, cameraG);
-const nodeG = el("g", { id: "nodes" }, cameraG);
-const moreG = el("g", { id: "more" }, cameraG);
-const agentG = el("g", { id: "agents" }, cameraG);
-const graphEls = { nodes: new Map<string, SVGElement>(), edges: new Map<string, SVGElement>() };
-let camGen = 0;
-let morphGen = 0;
-let trailEpoch = 0;
-let lastStage = { w: 0, h: 0 };
-
-el("marker", { id: "dot", viewBox: "0 0 6 6", refX: "3", refY: "3", markerWidth: "6", markerHeight: "6" }, defs);
-const agentClip = el("clipPath", { id: "agent-clip" }, defs);
-el("circle", { r: "11", cx: "0", cy: "0" }, agentClip);
-const hitFill = el("rect", {
-  class: "hitfill",
-  x: "0",
-  y: "0",
-  width: "4000",
-  height: "4000",
-  fill: "#0a0a0c",
-});
-els.svg.insertBefore(hitFill, cameraG);
-
-function applyCamera() {
-  cameraG.setAttribute(
-    "transform",
-    `translate(${camera.x.toFixed(1)} ${camera.y.toFixed(1)}) scale(${camera.k.toFixed(3)})`,
-  );
-}
+import {
+  anyPickerOpen,
+  bindChromeEvents,
+  fillSessionSelect,
+  layoutInstrument,
+  restoreChrome,
+  setSessionPickerOpen,
+  setSessionTitle,
+  syncPickerOverlay,
+} from "./chrome.ts";
+import {
+  agentG,
+  applyCamera,
+  camera,
+  defs,
+  edgeG,
+  els,
+  flags,
+  graphEls,
+  hooks,
+  inRoot,
+  moreG,
+  nodeG,
+  peekHere,
+  pushLog,
+  queues,
+  reduceMotion,
+  resolvedTheme,
+  setLive,
+  setPeek,
+  stageReady,
+  stageSize,
+  state,
+  syncHitFill,
+  whenStageReady,
+} from "./runtime.ts";
 
 function graphWorldBounds(laid = state.layout) {
   if (!laid?.pos?.size) return null;
@@ -167,31 +93,6 @@ function confineCamera() {
   applyCamera();
 }
 
-function stageReady() {
-  const { w, h } = stageSize();
-  return w >= 80 && h >= 80;
-}
-
-function whenStageReady(fn) {
-  const tick = (n = 0) => {
-    if (stageReady()) {
-      fn();
-      return;
-    }
-    if (n > 180) return;
-    requestAnimationFrame(() => tick(n + 1));
-  };
-  tick();
-}
-
-function syncHitFill() {
-  const { w, h } = stageSize();
-  hitFill.setAttribute("x", "0");
-  hitFill.setAttribute("y", "0");
-  hitFill.setAttribute("width", String(Math.max(w, 8)));
-  hitFill.setAttribute("height", String(Math.max(h, 8)));
-}
-
 function agentsBusy() {
   for (const agent of state.agents.values()) {
     if (agent.traveling || agent.targetId) return true;
@@ -202,7 +103,7 @@ function agentsBusy() {
 function fitToStage({ tween = false } = {}) {
   if (!state.layout || !stageReady()) return Promise.resolve();
   const { w, h } = stageSize();
-  lastStage = { w, h };
+  flags.lastStage = { w, h };
   syncHitFill();
   return tweenCamera(cameraTarget(state.layout), tween ? 360 : 0);
 }
@@ -211,15 +112,15 @@ function snapCameraToLayout(laid) {
   if (!laid || !stageReady()) return;
   Object.assign(camera, cameraTarget(laid));
   applyCamera();
-  lastStage = stageSize();
+  flags.lastStage = stageSize();
   syncHitFill();
 }
 
 function scheduleFit() {
-  pendingCenter = true;
+  flags.pendingCenter = true;
   whenStageReady(() => {
-    if (!state.layout || userMovedCamera) return;
-    pendingCenter = false;
+    if (!state.layout || flags.userMovedCamera) return;
+    flags.pendingCenter = false;
     fitToStage({ tween: false });
   });
 }
@@ -233,446 +134,29 @@ function afterPaint(fn) {
 }
 
 async function centerNewGraph({ tween = true } = {}) {
-  userMovedCamera = false;
-  pendingCenter = true;
+  flags.userMovedCamera = false;
+  flags.pendingCenter = true;
   if (!state.layout) {
     scheduleFit();
     return;
   }
   await afterPaint(() => {});
-  if (userMovedCamera) return;
+  if (flags.userMovedCamera) return;
   if (!stageReady()) {
     scheduleFit();
     return;
   }
-  pendingCenter = false;
+  flags.pendingCenter = false;
   await fitToStage({ tween });
-}
-
-function stageSize() {
-  return { w: els.stage.clientWidth, h: els.stage.clientHeight };
-}
-
-function setAgentSymbol(dataUrl) {
-  state.agentSymbol = dataUrl || null;
-  const face = els.faceBtn || els.faceWrap;
-  if (face) {
-    if (state.agentSymbol) {
-      face.style.backgroundImage = `url("${state.agentSymbol}")`;
-      face.classList.add("has-face");
-    } else {
-      face.style.backgroundImage = "";
-      face.classList.remove("has-face");
-    }
-  }
-  const reset = els.faceMenu?.querySelector('[data-face="reset"]');
-  if (reset instanceof HTMLElement) reset.hidden = !state.agentSymbol;
-  for (const agent of state.agents.values()) drawAgent(agent);
-}
-
-function readFace(file) {
-  return new Promise((resolve, reject) => {
-    if (!file || !file.type.startsWith("image/")) {
-      reject(new Error("not an image"));
-      return;
-    }
-    const img = new Image();
-    const url = URL.createObjectURL(file);
-    img.onload = () => {
-      const canvas = document.createElement("canvas");
-      canvas.width = 96;
-      canvas.height = 96;
-      const ctx = canvas.getContext("2d");
-      ctx.beginPath();
-      ctx.arc(48, 48, 48, 0, Math.PI * 2);
-      ctx.closePath();
-      ctx.clip();
-      const scale = Math.max(96 / img.width, 96 / img.height);
-      const w = img.width * scale;
-      const h = img.height * scale;
-      ctx.drawImage(img, 48 - w / 2, 48 - h / 2, w, h);
-      URL.revokeObjectURL(url);
-      resolve(canvas.toDataURL("image/png"));
-    };
-    img.onerror = () => {
-      URL.revokeObjectURL(url);
-      reject(new Error("could not read image"));
-    };
-    img.src = url;
-  });
-}
-
-function notifyHost(payload) {
-  window.webkit?.messageHandlers?.plexus?.postMessage(payload);
-}
-
-function prefGet(key) {
-  return localStorage.getItem(`plexus-${key}`) ?? localStorage.getItem(`grok-explore-${key}`);
-}
-
-function prefSet(key, value) {
-  if (value == null || value === "") {
-    localStorage.removeItem(`plexus-${key}`);
-    localStorage.removeItem(`grok-explore-${key}`);
-    return;
-  }
-  localStorage.setItem(`plexus-${key}`, value);
-}
-
-function savePrefs(extra = {}) {
-  const body = {
-    accent: state.accent,
-    agentSymbol: state.agentSymbol,
-    shape: state.shape,
-    theme: state.theme,
-    opacity: state.opacity,
-    graphFollow: state.graphFollow,
-    settingsHidden: state.settingsHidden,
-    ...extra,
-  };
-  prefSet("accent", state.accent);
-  prefSet("shape", state.shape);
-  prefSet("theme", state.theme);
-  prefSet("opacity", String(state.opacity));
-  prefSet("follow", state.graphFollow);
-  prefSet("settings", state.settingsHidden ? "off" : "on");
-  prefSet("face", state.agentSymbol);
-  fetch("/api/prefs", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(body),
-  }).catch(() => {});
-}
-
-const systemDark = window.matchMedia("(prefers-color-scheme: dark)");
-
-function resolvedTheme() {
-  if (state.theme === "system") return systemDark.matches ? "dark" : "light";
-  return state.theme === "light" ? "light" : "dark";
-}
-
-function accentForTheme(hex = state.accent) {
-  if (String(hex).toLowerCase() === WHITE && resolvedTheme() === "light") return INK;
-  return hex;
-}
-
-function stageFill() {
-  return resolvedTheme() === "light" ? "#f3f3f6" : "#0a0a0c";
-}
-
-function applyTheme(theme, { persist = false } = {}) {
-  state.theme = theme === "light" || theme === "system" ? theme : "dark";
-  const resolved = resolvedTheme();
-  document.documentElement.dataset.theme = resolved;
-  document.documentElement.dataset.themePref = state.theme;
-  document.documentElement.style.setProperty("--accent", accentForTheme());
-  hitFill.setAttribute("fill", stageFill());
-  notifyHost({ type: "theme", value: state.theme, resolved });
-  for (const agent of state.agents.values()) drawAgent(agent);
-  if (state.layout) drawTree(state.layout);
-  paintTheme();
-  paintPalette();
-  if (persist) savePrefs();
-}
-
-function applyOpacity(value, { persist = false } = {}) {
-  const next = Math.min(1, Math.max(0.4, Number(value) || 0.96));
-  state.opacity = next;
-  const pct = Math.round(next * 100);
-  if (els.opacity) els.opacity.value = String(pct);
-  if (els.opacityOut) els.opacityOut.textContent = String(pct);
-  document.documentElement.style.setProperty("--glass-fill", `${((pct - 40) / 60) * 100}%`);
-  notifyHost({ type: "opacity", value: next });
-  if (persist) savePrefs();
-}
-
-function paintFollow() {
-  const root = els.followSeg || document.getElementById("follow-seg");
-  if (!root) return;
-  for (const btn of root.querySelectorAll<HTMLButtonElement>("button[data-follow]")) {
-    const on = btn.dataset.follow === state.graphFollow;
-    btn.classList.toggle("on", on);
-    btn.setAttribute("aria-selected", on ? "true" : "false");
-  }
-}
-
-function applyFollow(mode, { persist = false } = {}) {
-  state.graphFollow = mode === "project" ? "project" : "focus";
-  paintFollow();
-  if (persist) savePrefs({ graphFollow: state.graphFollow });
-}
-
-function applySettingsHidden(hidden, { persist = false } = {}) {
-  state.settingsHidden = Boolean(hidden);
-  document.documentElement.dataset.settings = state.settingsHidden ? "off" : "on";
-  if (persist) savePrefs({ settingsHidden: state.settingsHidden });
-}
-
-function anyPickerOpen() {
-  return Boolean(
-    (els.sessionPicker && !els.sessionPicker.hidden) ||
-      (els.settingsPicker && !els.settingsPicker.hidden),
-  );
-}
-
-function syncPickerOverlay() {
-  const open = anyPickerOpen();
-  if (els.pickerScrim) els.pickerScrim.hidden = !open;
-  if (open) document.documentElement.dataset.picker = "open";
-  else delete document.documentElement.dataset.picker;
-  const picker =
-    els.sessionPicker && !els.sessionPicker.hidden
-      ? els.sessionPicker
-      : els.settingsPicker && !els.settingsPicker.hidden
-        ? els.settingsPicker
-        : null;
-  const post = () => {
-    const rect = picker?.getBoundingClientRect();
-    notifyHost({
-      type: "picker",
-      open,
-      x: rect?.left ?? 0,
-      y: rect?.top ?? 0,
-      width: rect?.width ?? 0,
-      height: rect?.height ?? 0,
-    });
-  };
-  if (open) requestAnimationFrame(post);
-  else post();
-}
-
-function closePickers() {
-  setSessionPickerOpen(false);
-  setSettingsPickerOpen(false);
-}
-
-function setSettingsPickerOpen(open) {
-  if (!els.settingsPicker) return;
-  if (open) {
-    if (els.sessionPicker) {
-      els.sessionPicker.hidden = true;
-      if (els.sessionSearch) els.sessionSearch.value = "";
-    }
-  }
-  els.settingsPicker.hidden = !open;
-  syncPickerOverlay();
-}
-
-function toggleSettingsPicker() {
-  setSettingsPickerOpen(Boolean(els.settingsPicker?.hidden));
-}
-
-function setColorMenuOpen(_open) {}
-
-function setFaceMenuOpen(open) {
-  if (!els.faceMenu || !els.faceBtn) return;
-  els.faceMenu.hidden = !open;
-  els.faceBtn.setAttribute("aria-expanded", open ? "true" : "false");
-}
-
-function paintPalette() {
-  if (els.colorCurrent) {
-    els.colorCurrent.style.backgroundColor = state.accent;
-    const name = PALETTE.find((c) => c.hex === state.accent)?.id || "color";
-    els.colorCurrent.title = name;
-  }
-  if (!els.palette) return;
-  els.palette.replaceChildren();
-  for (const color of PALETTE) {
-    const btn = document.createElement("button");
-    btn.type = "button";
-    btn.className = "chip" + (color.hex === state.accent ? " on" : "");
-    btn.title = color.id;
-    btn.setAttribute("role", "option");
-    btn.setAttribute("aria-label", color.id);
-    btn.style.background = color.id === "white" && resolvedTheme() === "light" ? INK : color.hex;
-    btn.addEventListener("click", (ev) => {
-      ev.stopPropagation();
-      setAccent(color.hex);
-      savePrefs();
-    });
-    els.palette.appendChild(btn);
-  }
-}
-
-function setAccent(hex) {
-  const value = nearestPalette(hex);
-  state.accent = value;
-  document.documentElement.style.setProperty("--accent", accentForTheme(value));
-  paintPalette();
-  for (const agent of state.agents.values()) {
-    agent.color = colorFor(agent.id);
-    drawAgent(agent);
-  }
-  if (state.layout) drawTree(state.layout);
-}
-
-function bindCenterBtn() {
-  const stage = els.stage || document.getElementById("stage");
-  if (!stage) return;
-  let tools = document.querySelector(".stage-tools");
-  if (!tools) {
-    tools = document.createElement("div");
-    tools.className = "stage-tools";
-    stage.appendChild(tools);
-  }
-  const demo = document.getElementById("btn-demo") || els.demo;
-  if (demo) {
-    demo.title = "Watch a sample trail";
-    demo.setAttribute("aria-label", "Preview");
-    if (!demo.querySelector("svg")) {
-      demo.textContent = "";
-      demo.innerHTML =
-        '<svg viewBox="0 0 16 16" aria-hidden="true"><path fill="currentColor" d="M5.1 3.05a.9.9 0 0 1 1.37-.76l7.2 4.45a.9.9 0 0 1 0 1.52l-7.2 4.45a.9.9 0 0 1-1.37-.76z"/></svg>';
-    }
-    if (demo.parentElement !== tools) tools.appendChild(demo);
-  }
-  let btn = document.getElementById("btn-center") || els.center;
-  if (!btn) {
-    btn = document.createElement("button");
-    btn.setAttribute("type", "button");
-    btn.id = "btn-center";
-    btn.title = "Center graph";
-    btn.setAttribute("aria-label", "Center graph");
-    btn.innerHTML =
-      '<svg viewBox="0 0 16 16" aria-hidden="true"><circle cx="8" cy="8" r="5.2" fill="none" stroke="currentColor" stroke-width="1.4"/><circle cx="8" cy="8" r="1.3" fill="currentColor"/><path d="M8 1.2v2.6M8 12.2v2.6M1.2 8h2.6M12.2 8h2.6" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/></svg>';
-  } else if (!btn.querySelector("svg")) {
-    btn.textContent = "";
-    btn.setAttribute("aria-label", "Center graph");
-    btn.innerHTML =
-      '<svg viewBox="0 0 16 16" aria-hidden="true"><circle cx="8" cy="8" r="5.2" fill="none" stroke="currentColor" stroke-width="1.4"/><circle cx="8" cy="8" r="1.3" fill="currentColor"/><path d="M8 1.2v2.6M8 12.2v2.6M1.2 8h2.6M12.2 8h2.6" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/></svg>';
-  }
-  if (btn.parentElement !== tools) tools.appendChild(btn);
-  els.center = btn;
-  els.demo = demo;
-  if (btn.dataset.bound) return;
-  btn.dataset.bound = "1";
-  btn.addEventListener("click", (ev) => {
-    ev.preventDefault();
-    ev.stopPropagation();
-    centerView();
-  });
-}
-
-function ensureShapeEl() {
-  if (els.shape && document.body.contains(els.shape)) return els.shape;
-  let shape = document.getElementById("shape");
-  if (!shape) {
-    shape = document.createElement("div");
-    shape.id = "shape";
-    shape.className = "seg";
-    shape.setAttribute("role", "tablist");
-    shape.setAttribute("aria-label", "Trail layout");
-    document.querySelector(".instrument")?.appendChild(shape);
-  }
-  els.shape = shape;
-  return shape;
-}
-
-function paintTheme() {
-  const root = els.themeSeg || document.getElementById("theme-seg");
-  if (!root) return;
-  for (const btn of root.querySelectorAll<HTMLButtonElement>("button")) {
-    const on = btn.dataset.theme === state.theme;
-    btn.classList.toggle("on", on);
-    btn.setAttribute("aria-selected", on ? "true" : "false");
-  }
-}
-
-function setSettingsOpen(open) {
-  const tray = els.settingsTray || document.getElementById("settings-tray");
-  const btn = els.settingsBtn || document.getElementById("btn-settings");
-  if (!tray || !btn) return;
-  tray.classList.toggle("open", open);
-  btn.setAttribute("aria-expanded", open ? "true" : "false");
-}
-
-let instrumentBusy = false;
-function layoutInstrument() {
-  const header = els.instrument || document.querySelector(".instrument");
-  const bar = els.settings || document.getElementById("settings");
-  const tray = els.settingsTray || document.getElementById("settings-tray");
-  const gear = els.settingsBtn || document.getElementById("btn-settings");
-  if (!header || !bar || !tray || instrumentBusy) return;
-  instrumentBusy = true;
-  const keys = ["color", "display", "follow", "trail", "glass"];
-  const cells = keys
-    .map((id) => header.querySelector(`[data-setting="${id}"]`) || bar.querySelector(`[data-setting="${id}"]`) || tray.querySelector(`[data-setting="${id}"]`))
-    .filter(Boolean);
-  header.classList.toggle("settings-off", state.settingsHidden);
-  if (state.settingsHidden) {
-    for (const cell of cells) bar.appendChild(cell);
-    header.classList.remove("compact");
-    setSettingsOpen(false);
-    requestAnimationFrame(() => {
-      instrumentBusy = false;
-    });
-    return;
-  }
-  for (const cell of cells) bar.appendChild(cell);
-  const styles = getComputedStyle(header);
-  const pad = (parseFloat(styles.paddingLeft) || 0) + (parseFloat(styles.paddingRight) || 0);
-  const gap = parseFloat(getComputedStyle(bar).columnGap || getComputedStyle(bar).gap) || 12;
-  const widths = new Map(cells.map((cell) => [cell, Math.ceil(cell.getBoundingClientRect().width) || 80]));
-  const pack = () => {
-    let space = header.clientWidth - pad;
-    const shown = [];
-    const hidden = [];
-    for (const cell of cells) {
-      const need = (widths.get(cell) || 80) + gap;
-      if (need <= space) {
-        shown.push(cell);
-        space -= need;
-      } else hidden.push(cell);
-    }
-    return { shown, hidden };
-  };
-  const result = pack();
-  for (const cell of result.shown) bar.appendChild(cell);
-  for (const cell of result.hidden) tray.appendChild(cell);
-  const compact = result.hidden.length > 0;
-  header.classList.toggle("compact", compact);
-  setSettingsOpen(compact);
-  requestAnimationFrame(() => {
-    instrumentBusy = false;
-  });
 }
 
 function centerView() {
   return centerNewGraph({ tween: true });
 }
 
-function paintShape() {
-  bindCenterBtn();
-  const root = ensureShapeEl();
-  if (!root) return;
-  root.replaceChildren();
-  for (const item of SHAPES) {
-    const btn = document.createElement("button");
-    btn.type = "button";
-    btn.setAttribute("role", "tab");
-    btn.textContent = item.label;
-    btn.title = item.id === "circle" ? "Circular map" : "Branching tree";
-    btn.className = item.id === state.shape ? "on" : "";
-    btn.setAttribute("aria-selected", item.id === state.shape ? "true" : "false");
-    btn.addEventListener("click", () => setShape(item.id));
-    els.shape.appendChild(btn);
-  }
-}
-
-async function setShape(shape, { persist = true, morph = true } = {}) {
-  const next = shape === "circle" ? "circle" : "tree";
-  const changed = next !== state.shape;
-  state.shape = next;
-  paintShape();
-  if (persist) savePrefs({ shape: next });
-  else prefSet("shape", next);
-  if (changed && morph && state.layout) await morphShape();
-}
-
 async function morphShape() {
   if (!state.rootId || !state.layout) return;
-  trailEpoch += 1;
+  flags.trailEpoch += 1;
   for (const agent of state.agents.values()) {
     agent.traveling = false;
     agent.targetId = null;
@@ -682,7 +166,7 @@ async function morphShape() {
   if (!laid) return;
   rememberTrailEdges(laid);
   await interpolateLayout(prev, laid, 720, { parkTraveling: true });
-  userMovedCamera = false;
+  flags.userMovedCamera = false;
   if (stageReady()) await fitToStage({ tween: true });
   else scheduleFit();
   drawTree(state.layout);
@@ -706,15 +190,6 @@ function ancestorsOf(id) {
     cursor = state.parentOf.get(cursor) ?? null;
   }
   return out;
-}
-
-function pinnedIds() {
-  const pins = new Set(state.userPins);
-  for (const agent of state.agents.values()) {
-    if (agent.nodeId) pins.add(agent.nodeId);
-    if (agent.targetId) pins.add(agent.targetId);
-  }
-  return pins;
 }
 
 function isOnTrail(id) {
@@ -872,8 +347,8 @@ async function keepGraphFramed({
 } = {}) {
   if (!state.layout) return;
   const fit = cameraTarget(state.layout);
-  const zoomedIn = userMovedCamera && camera.k > (fit.k || 1) + 0.05;
-  if (!zoomedIn && (!userMovedCamera || graphOverflowsView())) {
+  const zoomedIn = flags.userMovedCamera && camera.k > (fit.k || 1) + 0.05;
+  if (!zoomedIn && (!flags.userMovedCamera || graphOverflowsView())) {
     await fitToStage({ tween });
     return;
   }
@@ -908,7 +383,7 @@ function tweenCamera(to, ms) {
   ) {
     return Promise.resolve();
   }
-  const gen = ++camGen;
+  const gen = ++flags.camGen;
   if (reduceMotion || ms <= 0) {
     camera.x = to.x;
     camera.y = to.y;
@@ -920,7 +395,7 @@ function tweenCamera(to, ms) {
   return new Promise<void>((resolve) => {
     const t0 = performance.now();
     const frame = (now: number) => {
-      if (gen !== camGen) {
+      if (gen !== flags.camGen) {
         resolve();
         return;
       }
@@ -941,19 +416,19 @@ function preserveCameraOnResize() {
   const { w, h } = stageSize();
   if (w < 80 || h < 80) return;
   syncHitFill();
-  if (lastStage.w < 80 || lastStage.h < 80) {
-    lastStage = { w, h };
-    if (!userMovedCamera) fitToStage();
+  if (flags.lastStage.w < 80 || flags.lastStage.h < 80) {
+    flags.lastStage = { w, h };
+    if (!flags.userMovedCamera) fitToStage();
     return;
   }
-  if (lastStage.w !== w || lastStage.h !== h) {
-    const wx = (lastStage.w / 2 - camera.x) / camera.k;
-    const wy = (lastStage.h / 2 - camera.y) / camera.k;
+  if (flags.lastStage.w !== w || flags.lastStage.h !== h) {
+    const wx = (flags.lastStage.w / 2 - camera.x) / camera.k;
+    const wy = (flags.lastStage.h / 2 - camera.y) / camera.k;
     camera.x = w / 2 - wx * camera.k;
     camera.y = h / 2 - wy * camera.k;
     applyCamera();
   }
-  lastStage = { w, h };
+  flags.lastStage = { w, h };
 }
 
 function onStageResize() {
@@ -961,14 +436,14 @@ function onStageResize() {
   const { w, h } = stageSize();
   syncHitFill();
   if (w < 80 || h < 80) return;
-  if (Math.abs(lastStage.w - w) < 2 && Math.abs(lastStage.h - h) < 2) return;
+  if (Math.abs(flags.lastStage.w - w) < 2 && Math.abs(flags.lastStage.h - h) < 2) return;
   if (!state.layout) {
-    lastStage = { w, h };
+    flags.lastStage = { w, h };
     return;
   }
-  if (pendingCenter || (!userMovedCamera && !agentsBusy())) {
-    pendingCenter = false;
-    lastStage = { w, h };
+  if (flags.pendingCenter || (!flags.userMovedCamera && !agentsBusy())) {
+    flags.pendingCenter = false;
+    flags.lastStage = { w, h };
     fitToStage({ tween: false });
     return;
   }
@@ -982,7 +457,7 @@ function interpolateLayout(
   { parkTraveling = false }: { parkTraveling?: boolean } = {},
 ) {
   const park = (pos?: Map<string, NodePos> | null) => parkAgents(pos, { includeTraveling: parkTraveling });
-  const gen = ++morphGen;
+  const gen = ++flags.morphGen;
   if (reduceMotion || !fromPos || ms <= 0) {
     drawTree(laid);
     park();
@@ -991,7 +466,7 @@ function interpolateLayout(
   return new Promise<void>((resolve) => {
     const t0 = performance.now();
     const frame = (now: number) => {
-      if (gen !== morphGen) {
+      if (gen !== flags.morphGen) {
         resolve();
         return;
       }
@@ -1044,7 +519,7 @@ function paintEdge(g, from, to, a, b) {
   const visited = edgeVisited(from, to);
   g.classList.toggle("visited", visited);
   if (a && b) {
-    const d = edgePath(a.x, a.y, b.x, b.y);
+    const d = edgePath(a.x, a.y, b.x, b.y, { mode: state.shape });
     g.querySelector(".glow")?.setAttribute("d", d);
     g.querySelector(".stroke")?.setAttribute("d", d);
   }
@@ -1210,15 +685,6 @@ function clearGraph() {
   moreG.replaceChildren();
 }
 
-function descendantVisitCount(id) {
-  const prefix = `${id}/`;
-  let n = 0;
-  for (const key of state.visited.keys()) {
-    if (key === id || key.startsWith(prefix)) n += 1;
-  }
-  return n;
-}
-
 function liveNodeIds() {
   const ids = new Set();
   for (const agent of state.agents.values()) {
@@ -1296,36 +762,6 @@ function drawAgent(agent) {
     : agent.label || "agent";
 }
 
-function setLive(kind, text) {
-  if (!els.liveStatus) return;
-  els.liveStatus.className = `live ${kind}`;
-  els.liveStatus.textContent = text;
-}
-
-function pushLog(entry) {
-  state.log.unshift(entry);
-  state.log = state.log.slice(0, 6);
-  if (!els.log) return;
-  els.log.replaceChildren();
-  for (const item of state.log) {
-    const li = document.createElement("li");
-    const name = item.filePath ? item.filePath.split("/").pop() : item.folderPath.split("/").pop();
-    li.innerHTML = `<strong>${item.toolName || "visit"}</strong> ${name}`;
-    els.log.appendChild(li);
-  }
-}
-
-function setPeek(text) {
-  if (!els.peek) return;
-  els.peek.textContent = text || "";
-}
-
-function peekHere(folderPath: string | null | undefined, filePath?: string | null) {
-  const loc = filePath || folderPath || "";
-  const name = loc.split("/").filter(Boolean).pop() || "";
-  setPeek(name ? `now  ${name}` : loc);
-}
-
 function resetTree({ rootId, rootPath, name, nodes, parentOf }) {
   state.rootId = rootId;
   state.rootPath = rootPath;
@@ -1342,7 +778,7 @@ function resetTree({ rootId, rootPath, name, nodes, parentOf }) {
   if (els.log) els.log.replaceChildren();
   clearGraph();
   agentG.replaceChildren();
-  userMovedCamera = false;
+  flags.userMovedCamera = false;
   const laid = fitAndLayout();
   if (laid) {
     snapCameraToLayout(laid);
@@ -1351,94 +787,9 @@ function resetTree({ rootId, rootPath, name, nodes, parentOf }) {
   }
 }
 
-function setSessionTitle(text) {
-  const label = String(text || "").trim() || "Plexus";
-  document.title = label;
-  notifyHost({ type: "title", value: label });
-}
-
-function fillSessionSelect(sessions, selectedId) {
-  state.sessions = sessions || [];
-  if (selectedId) state.sessionId = selectedId;
-  const current =
-    state.sessions.find((item) => item.id === state.sessionId || item.selected) || state.sessions[0];
-  if (current) {
-    state.sessionId = current.id;
-    setSessionTitle(sessionLabel(current));
-  } else {
-    setSessionTitle(state.mode === "demo" ? "Preview" : "Plexus");
-  }
-  renderSessionPicker();
-}
-
-function renderSessionPicker() {
-  if (!els.sessionList) return;
-  const q = String(els.sessionSearch?.value || "").trim().toLowerCase();
-  const list = state.sessions.filter((item) => {
-    if (!q) return true;
-    const hay = `${sessionLabel(item)} ${item.cwd || ""} ${item.id || ""}`.toLowerCase();
-    return hay.includes(q);
-  });
-  els.sessionList.replaceChildren();
-  if (!list.length) {
-    const empty = document.createElement("div");
-    empty.className = "picker-sub";
-    empty.style.padding = "12px 10px";
-    empty.textContent = state.sessions.length ? "No matches" : "No live sessions";
-    els.sessionList.appendChild(empty);
-    return;
-  }
-  for (const item of list) {
-    const row = document.createElement("button");
-    row.type = "button";
-    row.className = "picker-row" + (item.id === state.sessionId ? " on" : "");
-    row.setAttribute("role", "option");
-    const body = document.createElement("div");
-    const title = document.createElement("div");
-    title.className = "picker-title";
-    title.textContent = sessionLabel(item);
-    const sub = document.createElement("div");
-    sub.className = "picker-sub";
-    if (item.id === state.sessionId) {
-      const dot = document.createElement("span");
-      dot.className = "picker-dot";
-      sub.appendChild(dot);
-    }
-    const bits = [];
-    if (item.id === state.sessionId) bits.push("Current");
-    if (item.provider && item.provider !== "grok") bits.push(item.provider);
-    const place = folderTail(item.cwd);
-    if (place) bits.push(place);
-    const meta = document.createElement("span");
-    meta.textContent = bits.join(" · ");
-    sub.appendChild(meta);
-    body.append(title, sub);
-    row.appendChild(body);
-    row.addEventListener("click", () => attachSession(item.id));
-    els.sessionList.appendChild(row);
-  }
-}
-
-function setSessionPickerOpen(open) {
-  if (!els.sessionPicker) return;
-  if (open && els.settingsPicker) els.settingsPicker.hidden = true;
-  els.sessionPicker.hidden = !open;
-  if (open) {
-    renderSessionPicker();
-    queueMicrotask(() => els.sessionSearch?.focus());
-  } else if (els.sessionSearch) {
-    els.sessionSearch.value = "";
-  }
-  syncPickerOverlay();
-}
-
-function toggleSessionPicker() {
-  setSessionPickerOpen(Boolean(els.sessionPicker?.hidden));
-}
-
 async function attachSession(id) {
   if (!id || id === "sample") return;
-  window.clearTimeout(demoTimer);
+  window.clearTimeout(flags.demoTimer);
   state.mode = "live";
   setSessionPickerOpen(false);
   await fetch("/api/attach", {
@@ -1447,16 +798,6 @@ async function attachSession(id) {
     body: JSON.stringify({ sessionId: id }),
   });
   await startLive();
-}
-
-window.__toggleSessions = toggleSessionPicker;
-window.__toggleSettings = toggleSettingsPicker;
-window.__closePickers = closePickers;
-window.__syncPickerOverlay = syncPickerOverlay;
-
-function inRoot(folder) {
-  if (!folder || !state.rootPath) return false;
-  return folder === state.rootPath || folder.startsWith(`${state.rootPath}/`);
 }
 
 async function mountRoot(root, name) {
@@ -1493,7 +834,7 @@ function applySnapshot(data) {
 
 async function applySnapshotNow(data) {
   try {
-    window.clearTimeout(demoTimer);
+    window.clearTimeout(flags.demoTimer);
     state.mode = "live";
     const root = data.root;
     if (!root) {
@@ -1504,8 +845,8 @@ async function applySnapshotNow(data) {
     const sessionId = data.sessionId || "";
     const sameRoot = Boolean(state.layout && state.rootPath === root);
     const laidCount = state.layout?.pos?.size || 0;
-    const incomingVisits = (data.visited || []).filter((folder) => folder === root || String(folder).startsWith(`${root}/`));
-    const incomingFiles = (data.files || []).filter((file) => file === root || String(file).startsWith(`${root}/`));
+    const incomingVisits = (data.visited || []).filter((folder) => pathUnder(root, folder));
+    const incomingFiles = (data.files || []).filter((file) => pathUnder(root, file));
     const sparse = sameRoot && laidCount <= 1 && (incomingVisits.length > 0 || incomingFiles.length > 0);
     const switchedView = !sameRoot || sparse;
     state.sessionId = sessionId || state.sessionId;
@@ -1672,7 +1013,7 @@ async function ensurePath(folderPath) {
       : segsProbe.length
         ? segsProbe.at(-1).path
         : state.rootId;
-  if (target !== state.rootPath && !target.startsWith(`${state.rootPath}/`)) {
+  if (!pathUnder(state.rootPath, target)) {
     return state.rootId;
   }
   await loadChildren(state.rootPath);
@@ -1751,7 +1092,7 @@ async function relayout({ tween = true, force = false }: { tween?: boolean; forc
     if (!laid) return;
     rememberTrailEdges(laid);
     await interpolateLayout(tween ? prev : null, laid, tween && prev ? 480 : 0);
-    userMovedCamera = false;
+    flags.userMovedCamera = false;
     if (stageReady()) await fitToStage({ tween });
     else scheduleFit();
     return;
@@ -1769,7 +1110,7 @@ function edgeFor(from, to, pos) {
   const a = pos.get(from);
   const b = pos.get(to);
   if (!a || !b) return null;
-  return edgePath(a.x, a.y, b.x, b.y);
+  return edgePath(a.x, a.y, b.x, b.y, { mode: state.shape });
 }
 
 function measurePath(d: string) {
@@ -1789,7 +1130,7 @@ function measurePath(d: string) {
 
 function animateAlong(agent: AgentMark, d: string | null | undefined, ms: number, reverse = false) {
   if (!d) return Promise.resolve();
-  const epoch = trailEpoch;
+  const epoch = flags.trailEpoch;
   const measured = measurePath(d);
   if (reduceMotion || ms <= 0) {
     const pt = reverse ? measured.start : measured.end;
@@ -1802,7 +1143,7 @@ function animateAlong(agent: AgentMark, d: string | null | undefined, ms: number
   return new Promise<void>((resolve) => {
     const t0 = performance.now();
     const frame = (now: number) => {
-      if (epoch !== trailEpoch) {
+      if (epoch !== flags.trailEpoch) {
         measured.release();
         resolve();
         return;
@@ -1824,7 +1165,7 @@ function animateAlong(agent: AgentMark, d: string | null | undefined, ms: number
 }
 
 async function travel(agent: AgentMark, destId: string) {
-  const epoch = trailEpoch;
+  const epoch = flags.trailEpoch;
   const start = agent.nodeId || state.rootId;
   if (start === destId) {
     agent.nodeId = destId;
@@ -1836,7 +1177,7 @@ async function travel(agent: AgentMark, destId: string) {
   agent.targetId = destId;
   const pos = state.layout.pos;
   for (let i = 0; i < hops.length - 1; i += 1) {
-    if (epoch !== trailEpoch) {
+    if (epoch !== flags.trailEpoch) {
       agent.traveling = false;
       agent.targetId = null;
       return;
@@ -1978,7 +1319,7 @@ async function startLive() {
 }
 
 function startDemo() {
-  window.clearTimeout(demoTimer);
+  window.clearTimeout(flags.demoTimer);
   state.mode = "demo";
   state.sessionId = "sample";
   setSessionTitle("Preview");
@@ -2019,7 +1360,7 @@ function startDemo() {
       filePath: isFile ? dest : null,
       agentLabel: "agent",
     });
-    demoTimer = window.setTimeout(tick, 280);
+    flags.demoTimer = window.setTimeout(tick, 280);
   };
   tick();
 }
@@ -2075,72 +1416,7 @@ function connectStream() {
 }
 
 els.demo?.addEventListener("click", () => startDemo());
-
-els.opacity?.addEventListener("input", () => {
-  applyOpacity(Number(els.opacity.value) / 100);
-});
-els.opacity?.addEventListener("change", () => {
-  applyOpacity(Number(els.opacity.value) / 100, { persist: true });
-});
-els.themeSeg?.addEventListener("click", (ev) => {
-  const btn = (ev.target as Element | null)?.closest<HTMLButtonElement>("button[data-theme]");
-  if (!btn) return;
-  applyTheme(btn.dataset.theme, { persist: true });
-});
-els.followSeg?.addEventListener("click", (ev) => {
-  const btn = (ev.target as Element | null)?.closest<HTMLButtonElement>("button[data-follow]");
-  if (!btn) return;
-  applyFollow(btn.dataset.follow, { persist: true });
-});
-els.sessionSearch?.addEventListener("input", () => renderSessionPicker());
-els.sessionSearch?.addEventListener("keydown", (ev) => {
-  if (ev.key === "Escape") {
-    ev.preventDefault();
-    setSessionPickerOpen(false);
-  }
-});
-els.pickerScrim?.addEventListener("pointerdown", (ev) => {
-  ev.preventDefault();
-  ev.stopPropagation();
-  closePickers();
-});
-if (window.ResizeObserver) {
-  for (const picker of [els.sessionPicker, els.settingsPicker]) {
-    if (!picker) continue;
-    new ResizeObserver(() => {
-      if (!picker.hidden) syncPickerOverlay();
-    }).observe(picker);
-  }
-}
-
-document.addEventListener("click", (ev) => {
-  const target = ev.target as Node | null;
-  if (els.menu && !els.menu.contains(target)) els.menu.hidden = true;
-  if (els.colorPick && !els.colorPick.contains(target)) setColorMenuOpen(false);
-  if (els.sessionPicker && !els.sessionPicker.hidden && !els.sessionPicker.contains(target)) {
-    setSessionPickerOpen(false);
-  }
-  if (els.settingsPicker && !els.settingsPicker.hidden && !els.settingsPicker.contains(target)) {
-    setSettingsPickerOpen(false);
-  }
-});
-
-document.addEventListener("keydown", (ev) => {
-  if ((ev.metaKey || ev.ctrlKey) && ev.key.toLowerCase() === "p") {
-    ev.preventDefault();
-    toggleSessionPicker();
-  }
-  if (ev.key === "Escape") {
-    if (els.sessionPicker && !els.sessionPicker.hidden) {
-      ev.preventDefault();
-      setSessionPickerOpen(false);
-    }
-    if (els.settingsPicker && !els.settingsPicker.hidden) {
-      ev.preventDefault();
-      setSettingsPickerOpen(false);
-    }
-  }
-});
+bindChromeEvents();
 
 let dragging = false;
 let dragStart = null;
@@ -2171,7 +1447,7 @@ window.addEventListener("pointermove", (ev) => {
   const dy = ev.clientY - dragStart.y;
   if (Math.hypot(dx, dy) > 4) {
     dragging = true;
-    userMovedCamera = true;
+    flags.userMovedCamera = true;
   }
   camera.x = dragStart.cx + dx;
   camera.y = dragStart.cy + dy;
@@ -2185,7 +1461,7 @@ function zoomAt(mx, my, next) {
   const prev = camera.k || 1;
   const k = Math.min(2.4, Math.max(0.22, next));
   if (k === prev) return;
-  userMovedCamera = true;
+  flags.userMovedCamera = true;
   const sx = (mx - camera.x) / prev;
   const sy = (my - camera.y) / prev;
   camera.k = k;
@@ -2213,7 +1489,7 @@ function onMapWheel(ev) {
     return;
   }
   if (!dx && !dy) return;
-  userMovedCamera = true;
+  flags.userMovedCamera = true;
   camera.x -= dx;
   camera.y -= dy;
   confineCamera();
@@ -2221,58 +1497,35 @@ function onMapWheel(ev) {
 window.addEventListener("wheel", onMapWheel, { passive: false, capture: true });
 
 window.addEventListener("resize", () => {
-  seq += 1;
-  const token = seq;
+  flags.seq += 1;
+  const token = flags.seq;
   if (anyPickerOpen()) syncPickerOverlay();
   window.setTimeout(() => {
-    if (token === seq) onStageResize();
+    if (token === flags.seq) onStageResize();
   }, 80);
 });
 
 if (window.ResizeObserver) {
   const relayoutUi = () => {
-    seq += 1;
-    const token = seq;
+    flags.seq += 1;
+    const token = flags.seq;
     window.setTimeout(() => {
-      if (token === seq) onStageResize();
+      if (token === flags.seq) onStageResize();
     }, 40);
   };
   if (els.stage) new ResizeObserver(relayoutUi).observe(els.stage);
   if (els.instrument) new ResizeObserver(() => layoutInstrument()).observe(els.instrument);
 }
 
+hooks.drawTree = (laid) => drawTree(laid);
+hooks.drawAgent = (agent) => drawAgent(agent);
+hooks.colorFor = (id) => colorFor(id);
+hooks.morphShape = () => morphShape();
+hooks.centerView = () => centerView();
+hooks.attachSession = (id) => attachSession(id);
+
 const autoDemo = new URLSearchParams(location.search).get("demo") === "1";
-setAccent(prefGet("accent") || DEFAULT_ACCENT);
-setAgentSymbol(prefGet("face"));
-setShape(prefGet("shape") || "tree", { persist: false, morph: false });
-applyTheme(prefGet("theme") || "system");
-applyFollow(prefGet("follow") || "focus", { persist: false });
-applySettingsHidden(prefGet("settings") === "off", { persist: false });
-if (systemDark.addEventListener) {
-  systemDark.addEventListener("change", () => {
-    if (state.theme === "system") applyTheme("system");
-  });
-} else if (systemDark.addListener) {
-  systemDark.addListener(() => {
-    if (state.theme === "system") applyTheme("system");
-  });
-}
-applyOpacity(Number(prefGet("opacity") || 0.96));
-fetch("/api/prefs")
-  .then((res) => (res.ok ? res.json() : null))
-  .then((prefs) => {
-    if (prefs?.accent) setAccent(prefs.accent);
-    if (Object.prototype.hasOwnProperty.call(prefs || {}, "agentSymbol")) {
-      setAgentSymbol(prefs.agentSymbol);
-    }
-    if (prefs?.shape) setShape(prefs.shape, { persist: false, morph: false });
-    if (prefs?.theme) applyTheme(prefs.theme);
-    if (typeof prefs?.opacity === "number") applyOpacity(prefs.opacity);
-    if (prefs?.graphFollow) applyFollow(prefs.graphFollow, { persist: false });
-    if (typeof prefs?.settingsHidden === "boolean") applySettingsHidden(prefs.settingsHidden, { persist: false });
-  })
-  .catch(() => {});
-layoutInstrument();
+restoreChrome();
 if (autoDemo) startDemo();
 else {
   connectStream();

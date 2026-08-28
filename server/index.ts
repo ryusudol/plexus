@@ -5,51 +5,22 @@ import { HOST, PORT } from "../lib/config.ts";
 import { extractVisit, inferProvider, type VisitEvent } from "../lib/extract.ts";
 import { collectStream, errMessage, repoRoot } from "../lib/node.ts";
 import { plexusDir } from "../lib/paths.ts";
-import type { HubEvent, Prefs } from "../lib/types.ts";
+import type { HubEvent } from "../lib/types.ts";
 import { installClaudeHooks } from "./claude.ts";
 import { installCodexHooks } from "./codex.ts";
-import { listFolders, folderName } from "./fs-tree.ts";
+import { folderName, listFolders } from "./fs-tree.ts";
 import { installGrokHooks } from "./hooks.ts";
-import { readPrefs, writePrefs } from "./prefs.ts";
+import { readPrefs, sanitizePrefs, writePrefs } from "./prefs.ts";
 import { SessionHub } from "./sessions.ts";
-import { resolveBrowserScript, transpileBrowserTs } from "./transpile.ts";
+import { send, serveStatic } from "./static.ts";
 
 const ROOT = repoRoot(import.meta.url);
 const PUBLIC = path.join(ROOT, "public");
 const LIB = path.join(ROOT, "lib");
 
-const MIME: Record<string, string> = {
-  ".html": "text/html; charset=utf-8",
-  ".js": "text/javascript; charset=utf-8",
-  ".ts": "text/javascript; charset=utf-8",
-  ".css": "text/css; charset=utf-8",
-  ".json": "application/json; charset=utf-8",
-  ".svg": "image/svg+xml",
-  ".png": "image/png",
-  ".jpg": "image/jpeg",
-  ".jpeg": "image/jpeg",
-  ".gif": "image/gif",
-  ".webp": "image/webp",
-};
-
 const clients = new Set<http.ServerResponse>();
 let workspaceRoot = process.env.PLEXUS_ROOT || process.env.GROK_EXPLORE_ROOT || process.cwd();
 const recentVisit = new Map<string, number>();
-
-function send(
-  res: http.ServerResponse,
-  status: number,
-  body: unknown,
-  headers: Record<string, string | number> = {},
-): void {
-  const payload = typeof body === "string" ? body : JSON.stringify(body);
-  res.writeHead(status, {
-    "Content-Type": "application/json; charset=utf-8",
-    "Cache-Control": "no-store",
-    ...headers,
-  });
-  res.end(payload);
-}
 
 function readBody(req: http.IncomingMessage): Promise<string> {
   return collectStream(req).then((buf) => buf.toString("utf8"));
@@ -121,41 +92,11 @@ function installHook(): void {
   }
 }
 
-function serveStatic(req: http.IncomingMessage, res: http.ServerResponse, url: URL): boolean {
-  let rel = decodeURIComponent(url.pathname);
-  if (rel === "/") rel = "/index.html";
-  const trimmed = rel.replace(/^\/+/, "");
-  const filePath = rel.startsWith("/lib/")
-    ? path.join(ROOT, trimmed)
-    : path.join(PUBLIC, trimmed);
-  let resolved = path.resolve(filePath);
-  const allowed = rel.startsWith("/lib/") ? LIB : PUBLIC;
-  if (resolved !== allowed && !resolved.startsWith(allowed + path.sep)) {
-    send(res, 403, { error: "forbidden" });
-    return true;
-  }
-  resolved = resolveBrowserScript(resolved);
-  if (!fs.existsSync(resolved) || fs.statSync(resolved).isDirectory()) return false;
-  const ext = path.extname(resolved);
-  if (ext === ".ts") {
-    const body = transpileBrowserTs(resolved);
-    if (body == null) return false;
-    res.writeHead(200, {
-      "Content-Type": "text/javascript; charset=utf-8",
-      "Cache-Control": "no-store",
-    });
-    res.end(body);
-    return true;
-  }
-  res.writeHead(200, {
-    "Content-Type": MIME[ext] || "application/octet-stream",
-    "Cache-Control": "no-store",
-  });
-  fs.createReadStream(resolved).pipe(res);
-  return true;
-}
-
-function handleHookPayload(payload: string | VisitEvent): { ok: boolean; decision?: string; hookSpecificOutput?: Record<string, string> } {
+function handleHookPayload(payload: string | VisitEvent): {
+  ok: boolean;
+  decision?: string;
+  hookSpecificOutput?: Record<string, string>;
+} {
   let event: VisitEvent;
   try {
     event = (typeof payload === "string" ? JSON.parse(payload || "{}") : payload) as VisitEvent;
@@ -212,6 +153,8 @@ const hub = new SessionHub({
   }
 }
 
+const staticDirs = { root: ROOT, publicDir: PUBLIC, libDir: LIB };
+
 const server = http.createServer(async (req, res) => {
   const url = new URL(req.url || "/", `http://${HOST}:${PORT}`);
 
@@ -238,40 +181,8 @@ const server = http.createServer(async (req, res) => {
   }
 
   if (req.method === "POST" && url.pathname === "/api/prefs") {
-    const body = JSON.parse((await readBody(req)) || "{}") as Prefs;
-    const patch: Prefs = {};
-    if (typeof body.accent === "string" && /^#[0-9a-fA-F]{6}$/.test(body.accent)) {
-      patch.accent = body.accent;
-    }
-    if (body.shape === "tree" || body.shape === "circle") {
-      patch.shape = body.shape;
-    }
-    if (body.theme === "light" || body.theme === "dark" || body.theme === "system") {
-      patch.theme = body.theme;
-    }
-    if (typeof body.opacity === "number" && Number.isFinite(body.opacity)) {
-      patch.opacity = Math.min(1, Math.max(0.4, body.opacity));
-    }
-    if (body.graphFollow === "focus" || body.graphFollow === "project") {
-      patch.graphFollow = body.graphFollow;
-    }
-    if (typeof body.settingsHidden === "boolean") {
-      patch.settingsHidden = body.settingsHidden;
-    }
-    if (typeof body.sessionId === "string" && body.sessionId.length < 200) {
-      patch.sessionId = body.sessionId;
-    }
-    if (Object.prototype.hasOwnProperty.call(body, "agentSymbol")) {
-      if (body.agentSymbol === null || body.agentSymbol === "") {
-        patch.agentSymbol = null;
-      } else if (
-        typeof body.agentSymbol === "string" &&
-        body.agentSymbol.startsWith("data:image/") &&
-        body.agentSymbol.length < 180000
-      ) {
-        patch.agentSymbol = body.agentSymbol;
-      }
-    }
+    const body = JSON.parse((await readBody(req)) || "{}");
+    const patch = sanitizePrefs(body);
     const prefs = writePrefs(patch);
     if (prefs.agentSymbol === null) delete prefs.agentSymbol;
     if (patch.graphFollow) {
@@ -334,7 +245,8 @@ const server = http.createServer(async (req, res) => {
     res.write(":\n\n");
     clients.add(res);
     const snap = hub.snapshot();
-    res.write(`data: ${JSON.stringify({ type: "snapshot", ...snap, name: snap.root ? folderName(snap.root, snap.root) : folderName(workspaceRoot, workspaceRoot) })}\n\n`);
+    const name = snap.root ? folderName(snap.root, snap.root) : folderName(workspaceRoot, workspaceRoot);
+    res.write(`data: ${JSON.stringify({ type: "snapshot", ...snap, name })}\n\n`);
     req.on("close", () => clients.delete(res));
     return;
   }
@@ -345,7 +257,7 @@ const server = http.createServer(async (req, res) => {
     return;
   }
 
-  if (req.method === "GET" && serveStatic(req, res, url)) return;
+  if (req.method === "GET" && serveStatic(req, res, url, staticDirs)) return;
 
   send(res, 404, { error: "not found" });
 });

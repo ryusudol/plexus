@@ -1,8 +1,8 @@
 import type { GraphLayout, TrailMode } from "../lib/layout.ts";
-import type { TreeNode } from "../lib/types.ts";
+import type { FollowMode, TreeNode } from "../lib/types.ts";
 
+export type { FollowMode };
 export type ThemePref = "light" | "dark" | "system";
-export type FollowMode = "focus" | "project";
 export type LiveKind = "on" | "waiting";
 
 export type AgentMark = {
@@ -86,8 +86,9 @@ export const PALETTE = [
 ];
 
 export const SHAPES = [
-  { id: "tree" as const, label: "Tree" },
-  { id: "circle" as const, label: "Circle" },
+  { id: "tree" as const, label: "Tree", title: "Branching tree" },
+  { id: "circle" as const, label: "Circle", title: "Circular map" },
+  { id: "neurons" as const, label: "Neurons", title: "Neural arbor" },
 ];
 
 export function nearestPalette(hex: string | null | undefined): string {

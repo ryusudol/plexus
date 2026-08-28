@@ -15,7 +15,7 @@
     "hud": "node bin/plexus.ts",
     "build:hud": "swift build -c release --package-path macos && node bin/package-hud.ts",
     "quit": "node bin/plexus.ts quit",
-    "test": "node --test tests/extract.test.ts tests/sessions.test.ts",
+    "test": "node --test tests/extract.test.ts tests/sessions.test.ts tests/layout.test.ts",
     "typecheck": "tsc --noEmit && tsc --noEmit -p tsconfig.web.json"
   },
   "devDependencies": {

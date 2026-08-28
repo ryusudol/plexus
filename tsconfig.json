@@ -13,6 +13,6 @@
     "isolatedModules": true,
     "types": ["node"]
   },
-  "include": ["bin/**/*.ts", "lib/**/*.ts", "server/**/*.ts", "tests/**/*.ts", "public/**/*.ts"],
-  "exclude": ["public/app.ts"]
+  "include": ["bin/**/*.ts", "lib/**/*.ts", "server/**/*.ts", "tests/**/*.ts", "public/hud.ts", "public/globals.d.ts"],
+  "exclude": []
 }

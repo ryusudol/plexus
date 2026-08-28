@@ -2,7 +2,12 @@ export type Point = { x: number; y: number };
 export type Camera = { x: number; y: number; k: number };
 export type ViewSize = { w: number; h: number };
 export type Bounds = { minX: number; minY: number; maxX: number; maxY: number };
-export type TrailMode = "tree" | "circle";
+export type TrailMode = "tree" | "circle" | "neurons";
+
+export function parseTrailMode(value: unknown): TrailMode {
+  if (value === "circle" || value === "neurons") return value;
+  return "tree";
+}
 
 export type NodePos = {
   x: number;
@@ -85,6 +90,28 @@ function finishLayout(pos: Map<string, NodePos>, rootId: string, getShownChildre
     height: maxY - minY + 96,
     size: pos,
   };
+}
+
+function unitHash(id: string): number {
+  let h = 2166136261;
+  for (let i = 0; i < id.length; i += 1) {
+    h ^= id.charCodeAt(i);
+    h = Math.imul(h, 16777619);
+  }
+  return (h >>> 0) / 4294967296;
+}
+
+function neuronSpan(n: number, depth: number): number {
+  if (n <= 1) return 0;
+  if (depth === 0) return Math.min(Math.PI * 1.92, 0.95 + 0.4 * (n - 1));
+  return Math.min(1.7, 0.52 + 0.17 * (n - 1));
+}
+
+function neuronLen(n: number, depth: number, t: number, index: number): number {
+  const base = depth === 0 ? 70 : 54;
+  const spread = Math.min(36, Math.max(0, n - 1) * 5);
+  const pulse = Math.sin(index * 2.15 + t * 4.2) * (depth === 0 ? 18 : 12);
+  return base + spread + pulse;
 }
 
 function wrapAngle(a: number): number {
@@ -207,6 +234,62 @@ export function layoutCircular({ rootId, getShownChildren }: {
   return finishLayout(pos, rootId, getShownChildren);
 }
 
+/**
+ * Neural arbor: soma at the root, dendrites radiating around each parent
+ * with deterministic length/angle jitter so the map stays stable.
+ */
+export function layoutNeurons({
+  rootId,
+  getShownChildren,
+}: {
+  rootId: string;
+  getShownChildren: ShownChildren;
+}): GraphLayout {
+  const leafCount = new Map<string, number>();
+  function count(id: string): number {
+    const kids = getShownChildren(id) || [];
+    const n = kids.length ? kids.reduce((sum, child) => sum + count(child), 0) : 1;
+    leafCount.set(id, n);
+    return n;
+  }
+  count(rootId);
+
+  const pos = new Map<string, NodePos>();
+  function place(id: string, x: number, y: number, heading: number, depth: number) {
+    pos.set(id, {
+      x,
+      y,
+      w: 40,
+      h: 14,
+      angle: heading,
+      depth,
+    });
+    const kids = getShownChildren(id) || [];
+    if (!kids.length) return;
+    const n = kids.length;
+    const span = neuronSpan(n, depth);
+    const total = kids.reduce((sum, child) => sum + (leafCount.get(child) || 1), 0) || 1;
+    let cursor = heading - span / 2;
+    kids.forEach((child, index) => {
+      const slice = span === 0 ? 0 : span * ((leafCount.get(child) || 1) / total);
+      const t = unitHash(child);
+      const wobble = span === 0 ? (t - 0.5) * 0.2 : (t - 0.5) * Math.min(0.28, Math.max(0.06, slice * 0.5));
+      const childHeading = n === 1 ? heading + wobble : cursor + slice / 2 + wobble;
+      const radius = neuronLen(n, depth, t, index);
+      place(
+        child,
+        x + Math.cos(childHeading) * radius,
+        y + Math.sin(childHeading) * radius,
+        childHeading,
+        depth + 1,
+      );
+      cursor += slice || 0;
+    });
+  }
+  place(rootId, 0, 0, Math.PI / 2, 0);
+  return finishLayout(pos, rootId, getShownChildren);
+}
+
 export function layoutTrail({
   mode = "tree",
   rootId,
@@ -216,7 +299,9 @@ export function layoutTrail({
   rootId: string;
   getShownChildren: ShownChildren;
 }): GraphLayout {
-  if (mode === "circle") return layoutCircular({ rootId, getShownChildren });
+  const kind = parseTrailMode(mode);
+  if (kind === "circle") return layoutCircular({ rootId, getShownChildren });
+  if (kind === "neurons") return layoutNeurons({ rootId, getShownChildren });
   return layoutRadial({ rootId, getShownChildren });
 }
 
@@ -248,16 +333,55 @@ function attachOnCircle(parentPos: NodePos, siblingPositions: NodePos[]): NodePo
   };
 }
 
+function attachOnNeuron(parentPos: NodePos, siblingPositions: NodePos[]): NodePos {
+  const heading0 = parentPos.angle ?? Math.PI / 2;
+  const depth = (parentPos.depth || 0) + 1;
+  const jitter = ((siblingPositions.length + 1) * 0.37) % 1;
+  if (!siblingPositions.length) {
+    const radius = 56 + (jitter - 0.5) * 16;
+    const angle = heading0 + (jitter - 0.5) * 0.2;
+    return {
+      x: parentPos.x + Math.cos(angle) * radius,
+      y: parentPos.y + Math.sin(angle) * radius,
+      angle,
+      depth,
+      w: 40,
+      h: 14,
+    };
+  }
+  const rel = siblingPositions.map((p) => ({
+    a: Math.atan2(p.y - parentPos.y, p.x - parentPos.x),
+    r: Math.hypot(p.x - parentPos.x, p.y - parentPos.y) || 56,
+  }));
+  const radius = rel.reduce((sum, item) => sum + item.r, 0) / rel.length + (jitter - 0.5) * 10;
+  const angles = rel.map((item) => item.a).sort((a, b) => a - b);
+  const lo = angles[0];
+  const hi = angles[angles.length - 1];
+  const delta = 0.34;
+  const angle = hi - lo > Math.PI ? lo - delta : hi + delta;
+  return {
+    x: parentPos.x + Math.cos(angle) * radius,
+    y: parentPos.y + Math.sin(angle) * radius,
+    angle,
+    depth,
+    w: 40,
+    h: 14,
+  };
+}
+
 /**
  * Place one new child without moving siblings already on the map.
  * `mode: "circle"` parks the child on the depth ring around the origin.
+ * `mode: "neurons"` grows a dendrite off the parent.
  */
 export function attachChild(
   parentPos: NodePos,
   siblingPositions: NodePos[] = [],
   { mode = "tree" }: { mode?: TrailMode | string } = {},
 ): NodePos {
-  if (mode === "circle") return attachOnCircle(parentPos, siblingPositions);
+  const kind = parseTrailMode(mode);
+  if (kind === "circle") return attachOnCircle(parentPos, siblingPositions);
+  if (kind === "neurons") return attachOnNeuron(parentPos, siblingPositions);
   const heading0 = parentPos.angle ?? Math.PI / 2;
   if (!siblingPositions.length) {
     const radius = 62;
@@ -416,7 +540,13 @@ export function fitCameraToBounds({
   };
 }
 
-export function edgePath(x1: number, y1: number, x2: number, y2: number): string {
+export function edgePath(
+  x1: number,
+  y1: number,
+  x2: number,
+  y2: number,
+  { mode }: { mode?: TrailMode | string } = {},
+): string {
   const dx = x2 - x1;
   const dy = y2 - y1;
   const dist = Math.hypot(dx, dy) || 1;
@@ -425,7 +555,8 @@ export function edgePath(x1: number, y1: number, x2: number, y2: number): string
   }
   const nx = -dy / dist;
   const ny = dx / dist;
-  const bend = Math.min(34, dist * 0.28);
+  const organic = parseTrailMode(mode) === "neurons";
+  const bend = Math.min(organic ? 42 : 34, dist * (organic ? 0.36 : 0.28));
   const c1x = x1 + dx * 0.32 + nx * bend;
   const c1y = y1 + dy * 0.32 + ny * bend;
   const c2x = x1 + dx * 0.68 - nx * bend * 0.55;

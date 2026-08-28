@@ -7,6 +7,7 @@ import {
   visitFromClaudeRecord,
   visitFromCodexRecord,
 } from "../lib/extract.ts";
+import { pathUnder, pathsOverlap, uniquePush, uniqueUnder } from "../lib/under.ts";
 
 describe("extractVisit", () => {
   it("maps read_file to the parent folder", () => {
@@ -51,6 +52,33 @@ describe("extractVisit", () => {
     assert.ok(visit);
     assert.equal(visit.folderPath, "/repo/src");
     assert.equal(visit.filePath, "/repo/src/main.js");
+  });
+});
+
+describe("pathUnder", () => {
+  it("treats the root and nested paths as inside", () => {
+    assert.equal(pathUnder("/repo", "/repo"), true);
+    assert.equal(pathUnder("/repo", "/repo/src/app.ts"), true);
+    assert.equal(pathUnder("/repo", "/other"), false);
+    assert.equal(pathUnder("/repo", "/repo-extra"), false);
+  });
+
+  it("detects overlapping project paths", () => {
+    assert.equal(pathsOverlap("/a", "/a/b"), true);
+    assert.equal(pathsOverlap("/a/b", "/a"), true);
+    assert.equal(pathsOverlap("/a", "/b"), false);
+  });
+
+  it("collects unique nested paths in first-seen order", () => {
+    const list: string[] = [];
+    uniquePush(list, "/repo/a");
+    uniquePush(list, "/repo/a");
+    uniquePush(list, "/repo/b");
+    assert.deepEqual(list, ["/repo/a", "/repo/b"]);
+    assert.deepEqual(uniqueUnder("/repo", [["/repo/src", "/tmp/x", "/repo/src", "/repo/lib"]]), [
+      "/repo/src",
+      "/repo/lib",
+    ]);
   });
 });
 

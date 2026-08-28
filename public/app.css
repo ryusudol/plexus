@@ -294,6 +294,10 @@ body {
   color: var(--seg-on-fg);
 }
 
+#shape.seg button {
+  padding: 0 6px;
+}
+
 .icon-seg button {
   width: 26px;
   padding: 0;
@@ -770,6 +774,15 @@ html[data-picker="open"] .stage-tools button::after {
   border: 0;
   border-radius: 6px;
   background: color-mix(in srgb, var(--text) 8%, transparent);
+}
+
+#settings-picker [data-setting="trail"] .seg {
+  max-width: 252px;
+}
+
+#settings-picker [data-setting="trail"] .seg button {
+  padding: 0 5px;
+  font-size: 11px;
 }
 
 #settings-picker .seg button {

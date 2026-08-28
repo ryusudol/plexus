@@ -92,6 +92,20 @@ export type Snapshot = {
   name?: string;
 };
 
+export function emptySnapshot(): Snapshot {
+  return {
+    sessions: [],
+    sessionId: null,
+    sessionTitle: null,
+    root: null,
+    agents: [],
+    visited: [],
+    files: [],
+    busy: false,
+    pids: [],
+  };
+}
+
 export type HubEvent =
   | ({ type: "snapshot" } & Snapshot)
   | { type: "activity"; active: boolean; sessionId: string | null; cwd?: string }
@@ -116,7 +130,7 @@ export type HubEvent =
 
 export type Prefs = {
   accent?: string;
-  shape?: "tree" | "circle";
+  shape?: "tree" | "circle" | "neurons";
   theme?: "light" | "dark" | "system";
   opacity?: number;
   graphFollow?: FollowMode;

@@ -1,5 +1,6 @@
 import { isRecord } from "./record.ts";
 import type { ParsedVisit, Provider, SessionHint, Visit } from "./types.ts";
+import { pathUnder } from "./under.ts";
 
 const FILE_KEYS = [
   "target_file",
@@ -439,9 +440,7 @@ export function segmentsFrom(root: string | null | undefined, folderPath: string
   const normRoot = (root || "/").replace(/\\/g, "/").replace(/\/+$/, "") || "/";
   const normPath = folderPath.replace(/\\/g, "/").replace(/\/+$/, "");
   if (normPath === normRoot) return [];
-  if (!normPath.startsWith(`${normRoot}/`) && normPath !== normRoot) {
-    return [];
-  }
+  if (!pathUnder(normRoot, normPath)) return [];
   const rest = normPath.slice(normRoot.length).replace(/^\//, "");
   if (!rest) return [];
   const parts = rest.split("/").filter(Boolean);
