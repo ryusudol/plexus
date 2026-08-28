@@ -86,7 +86,7 @@ func main() {
 	}
 
 	ensureBackend()
-	ensureHUD(!flags["--demo"], flags["--demo"])
+	ensureHUD(false, flags["--demo"])
 }
 
 func runServer() {

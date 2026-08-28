@@ -314,7 +314,7 @@ function cameraTarget(laid) {
   if (!laid?.pos?.size) return { x: w / 2, y: h / 2, k: 1 };
   const bounds = graphWorldBounds(laid);
   return (
-    fitCameraToBounds({ bounds, view: { w, h }, pad: 22, maxK: 1.7 }) || {
+    fitCameraToBounds({ bounds, view: { w, h }, pad: 22, padBottom: 11, maxK: 1.7 }) || {
       x: w / 2,
       y: h / 2,
       k: 1,
@@ -327,11 +327,12 @@ function graphOverflowsView(laid = state.layout) {
   const { w, h } = stageSize();
   if (w < 80 || h < 80) return false;
   const pad = 22;
+  const padBottom = 11;
   const k = camera.k || 1;
   for (const p of laid.pos.values()) {
     const vx = p.x * k + camera.x;
     const vy = p.y * k + camera.y;
-    if (vx < pad || vx > w - pad || vy < pad || vy > h - pad) return true;
+    if (vx < pad || vx > w - pad || vy < pad || vy > h - padBottom) return true;
   }
   return false;
 }
@@ -527,15 +528,18 @@ function paintEdge(g, from, to, a, b) {
   const stroke = g.querySelector(".stroke");
   if (glow) {
     glow.setAttribute("fill", "none");
-    glow.setAttribute("stroke", visited ? state.accent : "none");
-    glow.setAttribute("stroke-width", visited ? "7" : "0");
-    glow.setAttribute("opacity", visited ? "0.16" : "0");
+    glow.setAttribute("stroke", "none");
+    glow.setAttribute("stroke-width", "0");
+    glow.setAttribute("opacity", "0");
+    glow.removeAttribute("filter");
   }
   if (stroke) {
     stroke.setAttribute("fill", "none");
     stroke.setAttribute("stroke", visited ? state.accent : "#2a2a32");
     stroke.setAttribute("stroke-width", visited ? "1.6" : "0.8");
     stroke.setAttribute("opacity", visited ? "0.95" : "0.55");
+    stroke.setAttribute("stroke-linecap", "round");
+    stroke.setAttribute("stroke-linejoin", "round");
   }
 }
 
@@ -762,7 +766,49 @@ function drawAgent(agent) {
     : agent.label || "agent";
 }
 
-function resetTree({ rootId, rootPath, name, nodes, parentOf }) {
+function trailFromSnapshot(visited: string[] = [], files: string[] = []) {
+  const out: { folderPath: string; filePath: string | null; toolName: string }[] = [];
+  const remaining = files.slice();
+  for (const folder of visited) {
+    const here: string[] = [];
+    const rest: string[] = [];
+    for (const file of remaining) {
+      if (parentFolder(file) === folder) here.push(file);
+      else rest.push(file);
+    }
+    remaining.length = 0;
+    remaining.push(...rest);
+    if (here.length) {
+      for (const file of here) out.push({ folderPath: folder, filePath: file, toolName: "read_file" });
+    } else {
+      out.push({ folderPath: folder, filePath: null, toolName: "list_dir" });
+    }
+  }
+  for (const file of remaining) {
+    out.push({ folderPath: parentFolder(file), filePath: file, toolName: "read_file" });
+  }
+  return out;
+}
+
+function recordTrail(entry: { folderPath: string; filePath?: string | null; toolName?: string }) {
+  if (state.mode !== "live") return;
+  const last = state.trail[state.trail.length - 1];
+  const filePath = entry.filePath || null;
+  if (last && last.folderPath === entry.folderPath && (last.filePath || null) === filePath) return;
+  state.trail.push({
+    folderPath: entry.folderPath,
+    filePath,
+    toolName: entry.toolName,
+  });
+  if (state.trail.length > 400) state.trail.splice(0, state.trail.length - 400);
+}
+
+function motion(ms: number) {
+  const speed = Math.max(0.5, Number(state.agentSpeed) || 1.4);
+  return ms / speed;
+}
+
+function resetTree({ rootId, rootPath, name, nodes, parentOf, keepTrail = false }) {
   state.rootId = rootId;
   state.rootPath = rootPath;
   state.nodes = nodes;
@@ -775,6 +821,7 @@ function resetTree({ rootId, rootPath, name, nodes, parentOf }) {
   state.hidden = new Map();
   state.shown = new Map();
   state.log = [];
+  if (!keepTrail) state.trail = [];
   if (els.log) els.log.replaceChildren();
   clearGraph();
   agentG.replaceChildren();
@@ -790,6 +837,7 @@ function resetTree({ rootId, rootPath, name, nodes, parentOf }) {
 async function attachSession(id) {
   if (!id || id === "sample") return;
   window.clearTimeout(flags.demoTimer);
+  flags.trailEpoch += 1;
   state.mode = "live";
   setSessionPickerOpen(false);
   await fetch("/api/attach", {
@@ -800,7 +848,7 @@ async function attachSession(id) {
   await startLive();
 }
 
-async function mountRoot(root, name) {
+async function mountRoot(root, name, { keepTrail = false, load = true } = {}) {
   const nodes = new Map();
   const parentOf = new Map();
   nodes.set(root, {
@@ -820,8 +868,9 @@ async function mountRoot(root, name) {
     name: name || root.split("/").pop(),
     nodes,
     parentOf,
+    keepTrail,
   });
-  await loadChildren(root);
+  if (load) await loadChildren(root);
   state.expanded.add(root);
 }
 
@@ -842,15 +891,32 @@ function snapshotStale(gen: number) {
 
 async function applySnapshotNow(data, gen) {
   try {
-    window.clearTimeout(flags.demoTimer);
-    state.mode = "live";
+    const replaying = state.mode === "replay";
+    if (!replaying) {
+      window.clearTimeout(flags.demoTimer);
+      state.mode = "live";
+    }
     const root = data.root;
     if (!root) {
       fillSessionSelect(data.sessions, data.sessionId);
-      setLive("waiting", "waiting");
+      setLive("idle");
       return;
     }
-    const sessionId = data.sessionId || "";
+    const roster = data.sessions || [];
+    const pinned =
+      state.graphFollow === "project" &&
+      Boolean(state.sessionId) &&
+      roster.some((item) => item.id === state.sessionId);
+    if (pinned && data.sessionId && data.sessionId !== state.sessionId) {
+      fetch("/api/attach", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ sessionId: state.sessionId }),
+      }).catch(() => {});
+      fillSessionSelect(roster, state.sessionId);
+      return;
+    }
+    const sessionId = pinned ? state.sessionId : data.sessionId || "";
     const sameSession = Boolean(sessionId) && sessionId === state.sessionId;
     const sameRoot = Boolean(state.layout && state.rootPath === root);
     const laidCount = state.layout?.pos?.size || 0;
@@ -858,13 +924,15 @@ async function applySnapshotNow(data, gen) {
     const incomingFiles = (data.files || []).filter((file) => pathUnder(root, file));
     const sparse = sameSession && sameRoot && laidCount <= 1 && (incomingVisits.length > 0 || incomingFiles.length > 0);
     const switchedView = !sameSession || !sameRoot || sparse;
-    fillSessionSelect(data.sessions, sessionId || state.sessionId);
+    fillSessionSelect(roster, sessionId || state.sessionId);
     if (snapshotStale(gen)) return;
+    if (replaying) return;
     if (!sameSession || !sameRoot) {
       state.agents = new Map();
       queues.clear();
       await mountRoot(root, data.name);
       if (snapshotStale(gen)) return;
+      state.trail = trailFromSnapshot(incomingVisits, incomingFiles);
     }
     const visited = (data.visited || []).filter(inRoot);
     for (const folder of visited) {
@@ -907,10 +975,7 @@ async function applySnapshotNow(data, gen) {
     if (snapshotStale(gen)) return;
     if (switchedView) await centerNewGraph({ tween: false });
     fillSessionSelect(data.sessions, data.sessionId);
-    setLive(
-      data.busy ? "on" : agents.length ? "on" : "waiting",
-      data.busy ? "exploring" : agents.length ? "attached" : "waiting",
-    );
+    setLive(data.busy ? "exploring" : "idle");
     const lastFile = files[files.length - 1];
     const last = lastFile || visited[visited.length - 1];
     if (last) peekHere(lastFile ? parentFolder(lastFile) : last, lastFile || null);
@@ -1208,8 +1273,8 @@ async function travel(agent: AgentMark, destId: string) {
       const measured = measurePath(d);
       const entry = down ? measured.start : measured.end;
       measured.release();
-      await animateAlong(agent, `M ${agent.x} ${agent.y} L ${entry.x} ${entry.y}`, 70);
-      await animateAlong(agent, d, 360, !down);
+      await animateAlong(agent, `M ${agent.x} ${agent.y} L ${entry.x} ${entry.y}`, motion(70));
+      await animateAlong(agent, d, motion(360), !down);
       if (down) markEdgeVisited(from, to);
       else markEdgeVisited(to, from);
     } else {
@@ -1280,6 +1345,11 @@ async function visit(
       folderPath: resolved,
       filePath: meta.filePath,
     });
+    recordTrail({
+      toolName: meta.toolName,
+      folderPath,
+      filePath: meta.filePath,
+    });
     await travel(agent, resolved);
   });
 }
@@ -1336,6 +1406,7 @@ async function startLive() {
 
 function startDemo() {
   window.clearTimeout(flags.demoTimer);
+  flags.trailEpoch += 1;
   state.mode = "demo";
   state.sessionId = "sample";
   setSessionTitle("Preview");
@@ -1352,7 +1423,7 @@ function startDemo() {
     parentOf,
   });
   ensureAgent("main", "agent");
-  setLive("on", "demo walk");
+  setLive("exploring");
   fetch("/api/state")
     .then((res) => (res.ok ? res.json() : null))
     .then((data) => {
@@ -1364,7 +1435,7 @@ function startDemo() {
   const tick = async () => {
     if (state.mode !== "demo") return;
     if (i >= steps.length) {
-      setLive("on", "demo idle");
+      setLive("idle");
       return;
     }
     const dest = steps[i];
@@ -1376,7 +1447,47 @@ function startDemo() {
       filePath: isFile ? dest : null,
       agentLabel: "agent",
     });
-    flags.demoTimer = window.setTimeout(tick, 280);
+    flags.demoTimer = window.setTimeout(tick, motion(280));
+  };
+  tick();
+}
+
+async function startReplay() {
+  const steps = state.trail.slice();
+  if (!steps.length || !state.rootPath) {
+    startDemo();
+    return;
+  }
+  window.clearTimeout(flags.demoTimer);
+  flags.trailEpoch += 1;
+  const root = state.rootPath;
+  const name = state.nodes.get(state.rootId)?.name || root.split("/").filter(Boolean).pop();
+  const sessionId = state.sessionId;
+  state.mode = "replay";
+  state.agents = new Map();
+  queues.clear();
+  await mountRoot(root, name, { keepTrail: true, load: true });
+  if (sessionId) state.sessionId = sessionId;
+  ensureAgent(sessionId || "main", "agent");
+  setLive("exploring");
+  let i = 0;
+  const tick = async () => {
+    if (state.mode !== "replay") return;
+    if (i >= steps.length) {
+      setLive("idle");
+      state.mode = "live";
+      await relayout({ tween: true, force: true });
+      parkAgents();
+      return;
+    }
+    const step = steps[i];
+    i += 1;
+    await visit(sessionId || "main", step.folderPath, {
+      toolName: step.toolName,
+      filePath: step.filePath,
+      agentLabel: "agent",
+    });
+    flags.demoTimer = window.setTimeout(tick, motion(280));
   };
   tick();
 }
@@ -1386,10 +1497,10 @@ function connectStream() {
   if (stream) return;
   stream = new EventSource("/api/stream");
   stream.onopen = () => {
-    if (state.mode === "live") setLive("on", "attached");
+    if (state.mode === "live") setLive("idle");
   };
   stream.onerror = () => {
-    if (state.mode === "live") setLive("waiting", "reconnecting");
+    if (state.mode === "live") setLive("reconnecting");
   };
   stream.onmessage = (ev) => {
     let data;
@@ -1399,7 +1510,7 @@ function connectStream() {
       return;
     }
     if (data.type === "snapshot") {
-      if (state.mode === "live") applySnapshot(data);
+      if (state.mode === "live" || state.mode === "replay") applySnapshot(data);
       else if (data.sessions) fillSessionSelect(data.sessions, data.sessionId);
       return;
     }
@@ -1407,7 +1518,7 @@ function connectStream() {
       return;
     }
     if (data.type === "activity") {
-      setLive(data.active ? "on" : "waiting", data.active ? "exploring" : "idle");
+      setLive(data.active ? "exploring" : "idle");
     }
     if (data.type === "agent" && data.status === "start") {
       if (data.cwd && state.rootPath && data.cwd !== state.rootPath) return;
@@ -1422,7 +1533,7 @@ function connectStream() {
       if (state.sessionId && data.agentId && data.agentId !== state.sessionId) return;
       const loc = data.filePath || data.folderPath;
       if (!inRoot(loc) && data.cwd && data.cwd !== state.rootPath) return;
-      setLive("on", "exploring");
+      setLive("exploring");
       visit(data.agentId, data.folderPath, {
         toolName: data.toolName,
         filePath: data.filePath,
@@ -1432,7 +1543,9 @@ function connectStream() {
   };
 }
 
-els.demo?.addEventListener("click", () => startDemo());
+els.demo?.addEventListener("click", () => {
+  startReplay();
+});
 bindChromeEvents();
 
 let dragging = false;

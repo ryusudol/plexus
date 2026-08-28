@@ -11,7 +11,6 @@ import (
 
 	"github.com/ryusudol/plexus/internal/claude"
 	"github.com/ryusudol/plexus/internal/codex"
-	"github.com/ryusudol/plexus/internal/config"
 	"github.com/ryusudol/plexus/internal/jsonx"
 	"github.com/ryusudol/plexus/internal/orca"
 	"github.com/ryusudol/plexus/internal/paths"
@@ -174,18 +173,10 @@ func ReadActiveSessions(home string, panes map[string]orca.Pane, panesSet bool) 
 	if home == "" {
 		home = GrokHome()
 	}
+	activePath := filepath.Join(home, "active_sessions.json")
+	_, activeErr := os.Stat(activePath)
+	hasActiveFile := activeErr == nil
 	rows := readActiveSessionRows(home)
-	byID := map[string]types.SessionRow{}
-	now := time.Now()
-	for _, row := range rows {
-		hostLive := paths.PidAlive(row.PID)
-		var mtime int64
-		if st, err := os.Stat(UpdatesPath(row, home)); err == nil {
-			mtime = st.ModTime().UnixMilli()
-		}
-		recent := now.Sub(time.UnixMilli(mtime)) < config.Live
-		byID[row.SessionID] = rosterEntry(row, home, hostLive || recent)
-	}
 
 	var livePanes map[string]orca.Pane
 	var hasPanes bool
@@ -193,6 +184,26 @@ func ReadActiveSessions(home string, panes map[string]orca.Pane, panesSet bool) 
 		livePanes, hasPanes = panes, true
 	} else if home == GrokHome() {
 		livePanes, hasPanes = orca.ReadLivePanes("")
+	}
+
+	pidCount := map[int]int{}
+	for _, row := range rows {
+		if row.PID > 0 {
+			pidCount[row.PID]++
+		}
+	}
+
+	byID := map[string]types.SessionRow{}
+	for _, row := range rows {
+		inPane := hasPanes && livePanes != nil && paneListed(livePanes, row.SessionID)
+		hostLive := paths.PidAlive(row.PID)
+		if !inPane && !hostLive {
+			continue
+		}
+		if !inPane && hostLive && pidCount[row.PID] > 1 && siblingOnPane(rows, livePanes, hasPanes, row) {
+			continue
+		}
+		byID[row.SessionID] = rosterEntry(row, home, true)
 	}
 
 	out := []types.SessionRow{}
@@ -203,6 +214,12 @@ func ReadActiveSessions(home string, panes map[string]orca.Pane, panesSet bool) 
 				existing.Live = true
 				out = append(out, existing)
 				seen[id] = true
+				continue
+			}
+			// Grok's active_sessions.json is authoritative once it exists.
+			// A leftover Orca pane after terminate must not keep the session
+			// in the picker.
+			if hasActiveFile {
 				continue
 			}
 			cwd := pane.Cwd
@@ -222,13 +239,33 @@ func ReadActiveSessions(home string, panes map[string]orca.Pane, panesSet bool) 
 		if seen[session.SessionID] {
 			continue
 		}
-		if !session.Live {
-			continue
-		}
 		out = append(out, session)
 		seen[session.SessionID] = true
 	}
 	return types.NewestByID(out)
+}
+
+func paneListed(panes map[string]orca.Pane, id string) bool {
+	if panes == nil {
+		return false
+	}
+	_, ok := panes[id]
+	return ok
+}
+
+func siblingOnPane(rows []types.SessionRow, panes map[string]orca.Pane, hasPanes bool, row types.SessionRow) bool {
+	if !hasPanes || panes == nil || row.PID <= 0 {
+		return false
+	}
+	for _, other := range rows {
+		if other.SessionID == row.SessionID || other.PID != row.PID {
+			continue
+		}
+		if paneListed(panes, other.SessionID) {
+			return true
+		}
+	}
+	return false
 }
 
 func ReadAllSessions(home string) []types.SessionRow {

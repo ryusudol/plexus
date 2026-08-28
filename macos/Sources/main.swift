@@ -177,6 +177,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, WKNa
   private var commandTimer: Timer?
   private var focusTimer: Timer?
   private var startedAt = Date()
+  private var pidsReady = false
   private var userHidden = false
   private var orbDismissed = false
   private var loggedOut = false
@@ -186,6 +187,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, WKNa
   private var statusMenu: NSMenu!
   private var panelOpacity: Double = 0.96
   private var theme = "system"
+  private var accentHex = "#ff4fcb"
   private var appearanceObs: NSKeyValueObservation?
   private var restoringFrame = false
   private var chromeHover = false
@@ -207,7 +209,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, WKNa
     buildStatusItem()
     applyChrome()
     appearanceObs = NSApp.observe(\.effectiveAppearance) { [weak self] _, _ in
-      DispatchQueue.main.async { self?.applyChrome() }
+      DispatchQueue.main.async {
+        guard let self, self.theme == "system" else { return }
+        self.applyChrome()
+      }
     }
     writePid()
     watchCommands()
@@ -220,9 +225,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, WKNa
       self?.applyFocus()
     }
     loadPage()
+    userHidden = false
     if !startHidden {
-      showPanel()
+      showOrb(false)
+      panel.orderFrontRegardless()
+      refreshMenu()
     }
+    refreshPidsAndFocus()
   }
 
   private func buildPanel() {
@@ -443,7 +452,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, WKNa
   }
 
   private func buildOrb() {
-    let size: CGFloat = 58
+    let size: CGFloat = 64
     let screen = NSScreen.main?.visibleFrame ?? NSRect(x: 0, y: 0, width: 1280, height: 800)
     var origin = NSPoint(x: screen.maxX - size - 22, y: screen.minY + 72)
     if let saved = UserDefaults.standard.string(forKey: "orbFrame") {
@@ -463,7 +472,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, WKNa
     orb.becomesKeyOnlyIfNeeded = true
     orb.isOpaque = false
     orb.backgroundColor = .clear
-    orb.hasShadow = true
+    orb.hasShadow = false
     orb.isMovableByWindowBackground = false
     let view = OrbView(frame: NSRect(origin: .zero, size: NSSize(width: size, height: size)))
     view.autoresizingMask = [.width, .height]
@@ -506,6 +515,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, WKNa
     if let value = obj["theme"] as? String, value == "light" || value == "dark" || value == "system" {
       theme = value
     }
+    if let value = obj["accent"] as? String, value.hasPrefix("#") {
+      accentHex = value
+    }
   }
 
   private func resolvedLight() -> Bool {
@@ -521,14 +533,39 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, WKNa
     grabBar?.light = light
     sessionBtn?.light = light
     settingsBtn?.light = light
+    orbView?.light = light
+    let appearance = NSAppearance(named: light ? .aqua : .darkAqua)
+    if panel?.appearance?.name != appearance?.name {
+      panel?.appearance = appearance
+      rootView?.appearance = appearance
+      webView?.appearance = appearance
+    }
+    if orbPanel?.appearance?.name != appearance?.name {
+      orbPanel?.appearance = appearance
+    }
     let bg = light
-      ? NSColor(calibratedRed: 0.953, green: 0.953, blue: 0.965, alpha: 1)
+      ? NSColor(calibratedRed: 243 / 255, green: 243 / 255, blue: 246 / 255, alpha: 1)
       : NSColor(calibratedRed: 0.04, green: 0.04, blue: 0.047, alpha: 1)
     rootView?.layer?.backgroundColor = bg.cgColor
     webView?.layer?.backgroundColor = bg.cgColor
     if #available(macOS 12.0, *) {
       webView?.underPageBackgroundColor = bg
     }
+    if let color = colorFromHex(accentHex) {
+      orbView?.accent = color
+    }
+  }
+
+  private func colorFromHex(_ hex: String) -> NSColor? {
+    var h = hex.trimmingCharacters(in: .whitespacesAndNewlines)
+    if h.hasPrefix("#") { h.removeFirst() }
+    guard h.count == 6, let n = UInt32(h, radix: 16) else { return nil }
+    return NSColor(
+      calibratedRed: CGFloat((n >> 16) & 0xff) / 255,
+      green: CGFloat((n >> 8) & 0xff) / 255,
+      blue: CGFloat(n & 0xff) / 255,
+      alpha: 1
+    )
   }
 
   func userContentController(_ userContentController: WKUserContentController, didReceive message: WKScriptMessage) {
@@ -548,10 +585,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, WKNa
       panelOpacity = min(1, max(0.4, value))
       applyChrome()
     }
-    if type == "theme", let value = obj["value"] as? String {
-      if value == "light" || value == "dark" || value == "system" {
+    if type == "theme" {
+      if let value = obj["value"] as? String, value == "light" || value == "dark" || value == "system" {
         theme = value
       }
+      applyChrome()
+    }
+    if type == "accent", let value = obj["value"] as? String, value.hasPrefix("#") {
+      accentHex = value
       applyChrome()
     }
     if type == "logout" {
@@ -601,7 +642,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, WKNa
       width: js.width,
       height: js.height
     )
-    shield.hole = web.convert(flipped, to: shield).insetBy(dx: -2, dy: -2)
+    shield.hole = web.convert(flipped, to: shield).insetBy(dx: -10, dy: -10)
     shield.isHidden = false
   }
 
@@ -803,8 +844,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, WKNa
     guard let raw = try? String(contentsOf: file, encoding: .utf8) else { return }
     try? FileManager.default.removeItem(at: file)
     let command = raw.trimmingCharacters(in: .whitespacesAndNewlines)
-    if command == "quit", Date().timeIntervalSince(startedAt) < 2 {
-      return
+    if Date().timeIntervalSince(startedAt) < 2 {
+      if command == "quit" || command == "toggle" || command == "hide" { return }
     }
     switch command {
     case "quit":
@@ -839,6 +880,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, WKNa
       }
       DispatchQueue.main.async {
         self?.sessionPids = pids
+        self?.pidsReady = true
         self?.applyFocus()
       }
     }.resume()
@@ -880,7 +922,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, WKNa
       return
     }
     lastRelated = related
+    let launching = Date().timeIntervalSince(startedAt) < 2.5
     if !related {
+      // Keep the panel up while starting, and until we know which agent pids exist.
+      // Otherwise the first focus poll hides the window the moment it appears.
+      if !startHidden, !userHidden, (!pidsReady || launching) {
+        showOrb(false)
+        if !panel.isVisible {
+          panel.orderFrontRegardless()
+          refreshMenu()
+        }
+        return
+      }
       showOrb(false)
       if panel.isVisible {
         panel.orderOut(nil)
@@ -934,9 +987,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, WKNa
     userHidden = false
     orbDismissed = false
     showOrb(false)
-    if demoHold || isSessionFocused() {
-      panel.orderFrontRegardless()
-    }
+    panel.orderFrontRegardless()
+    refreshPidsAndFocus()
     refreshMenu()
   }
 

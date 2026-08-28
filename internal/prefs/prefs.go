@@ -15,6 +15,7 @@ type Prefs struct {
 	Shape          string   `json:"shape,omitempty"`
 	Theme          string   `json:"theme,omitempty"`
 	Opacity        *float64 `json:"opacity,omitempty"`
+	AgentSpeed     *float64 `json:"agentSpeed,omitempty"`
 	GraphFollow    string   `json:"graphFollow,omitempty"`
 	SettingsHidden *bool    `json:"settingsHidden,omitempty"`
 	SessionID      string   `json:"sessionId,omitempty"`
@@ -56,6 +57,9 @@ func Write(next Prefs) Prefs {
 	}
 	if next.Opacity != nil {
 		cur.Opacity = next.Opacity
+	}
+	if next.AgentSpeed != nil {
+		cur.AgentSpeed = next.AgentSpeed
 	}
 	if next.GraphFollow != "" {
 		cur.GraphFollow = next.GraphFollow
@@ -118,6 +122,36 @@ func Sanitize(body any) Prefs {
 			}
 			patch.Opacity = &f
 		}
+	}
+	if m["agentSpeed"] != nil {
+		var f float64
+		switch v := m["agentSpeed"].(type) {
+		case float64:
+			f = v
+		case int:
+			f = float64(v)
+		default:
+			f = -1
+		}
+		if f >= 0 {
+			if f < 0.5 {
+				f = 0.5
+			}
+			if f > 4 {
+				f = 4
+			}
+			patch.AgentSpeed = &f
+		}
+	}
+	if s := jsonx.Str(m["agentSpeed"]); s == "slow" || s == "medium" || s == "fast" {
+		rate := 1.4
+		if s == "slow" {
+			rate = 0.72
+		}
+		if s == "fast" {
+			rate = 3.4
+		}
+		patch.AgentSpeed = &rate
 	}
 	if s := jsonx.Str(m["graphFollow"]); s == "focus" || s == "project" {
 		patch.GraphFollow = s

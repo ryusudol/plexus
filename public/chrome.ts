@@ -4,6 +4,8 @@ import {
   INK,
   PALETTE,
   SHAPES,
+  nearestSpeed,
+  speedRate,
   folderTail,
   nearestPalette,
   sessionLabel,
@@ -75,19 +77,33 @@ export function readFace(file: File) {
   });
 }
 
+let themeUserSet = false;
+
 export function applyTheme(theme: string | ThemePref, { persist = false } = {}) {
-  state.theme = theme === "light" || theme === "system" ? theme : "dark";
+  const next = theme === "light" || theme === "system" || theme === "dark" ? theme : "dark";
+  const prev = state.theme;
+  state.theme = next;
   const resolved = resolvedTheme();
-  document.documentElement.dataset.theme = resolved;
-  document.documentElement.dataset.themePref = state.theme;
+  const prevResolved = document.documentElement.getAttribute("data-theme");
+  document.documentElement.setAttribute("data-theme", resolved);
+  document.documentElement.setAttribute("data-theme-pref", next);
+  document.documentElement.style.colorScheme = resolved;
   document.documentElement.style.setProperty("--accent", accentForTheme());
   hitFill.setAttribute("fill", stageFill());
-  notifyHost({ type: "theme", value: state.theme, resolved });
-  for (const agent of state.agents.values()) hooks.drawAgent(agent);
-  if (state.layout) hooks.drawTree(state.layout);
+  const changed = prev !== next || prevResolved !== resolved;
+  if (changed) {
+    notifyHost({ type: "theme", value: next, resolved });
+    notifyHost({ type: "accent", value: accentForTheme() });
+    for (const agent of state.agents.values()) hooks.drawAgent(agent);
+    if (state.layout) hooks.drawTree(state.layout);
+  }
   paintTheme();
   paintPalette();
-  if (persist) savePrefs();
+  if (persist) {
+    themeUserSet = true;
+    savePrefs({ theme: next });
+  }
+  if (changed) requestAnimationFrame(() => syncPickerOverlay());
 }
 
 export function applyOpacity(value: number, { persist = false } = {}) {
@@ -99,6 +115,26 @@ export function applyOpacity(value: number, { persist = false } = {}) {
   document.documentElement.style.setProperty("--glass-fill", `${((pct - 40) / 60) * 100}%`);
   notifyHost({ type: "opacity", value: next });
   if (persist) savePrefs();
+}
+
+export function paintSpeed() {
+  const root = els.speedSeg || document.getElementById("speed-seg");
+  if (!root) return;
+  const current = nearestSpeed(state.agentSpeed);
+  for (const btn of root.querySelectorAll<HTMLButtonElement>("button[data-speed]")) {
+    const on = btn.dataset.speed === current;
+    btn.classList.toggle("on", on);
+    btn.setAttribute("aria-selected", on ? "true" : "false");
+  }
+}
+
+export function applyAgentSpeed(value: unknown, { persist = false } = {}) {
+  const preset = nearestSpeed(value);
+  const next = speedRate(preset);
+  state.agentSpeed = next;
+  paintSpeed();
+  if (persist) savePrefs({ agentSpeed: next });
+  else prefSet("speed", String(next));
 }
 
 export function paintFollow() {
@@ -152,8 +188,10 @@ export function syncPickerOverlay() {
       height: rect?.height ?? 0,
     });
   };
-  if (open) requestAnimationFrame(post);
-  else post();
+  if (open) {
+    requestAnimationFrame(post);
+    requestAnimationFrame(() => requestAnimationFrame(post));
+  } else post();
 }
 
 export function closePickers() {
@@ -214,6 +252,7 @@ export function setAccent(hex: string | null | undefined) {
   const value = nearestPalette(hex);
   state.accent = value;
   document.documentElement.style.setProperty("--accent", accentForTheme(value));
+  notifyHost({ type: "accent", value: accentForTheme(value) });
   paintPalette();
   for (const agent of state.agents.values()) {
     agent.color = hooks.colorFor(agent.id);
@@ -233,8 +272,8 @@ export function bindCenterBtn() {
   }
   const demo = document.getElementById("btn-demo") || els.demo;
   if (demo) {
-    demo.title = "Watch a sample trail";
-    demo.setAttribute("aria-label", "Preview");
+    demo.title = "Replay trail";
+    demo.setAttribute("aria-label", "Replay trail");
     if (!demo.querySelector("svg")) {
       demo.textContent = "";
       demo.innerHTML =
@@ -308,7 +347,7 @@ export function layoutInstrument() {
   const tray = els.settingsTray || document.getElementById("settings-tray");
   if (!header || !bar || !tray || flags.instrumentBusy) return;
   flags.instrumentBusy = true;
-  const keys = ["color", "display", "follow", "trail", "glass"];
+  const keys = ["color", "display", "follow", "trail", "glass", "speed"];
   const cells = keys
     .map((id) => header.querySelector(`[data-setting="${id}"]`) || bar.querySelector(`[data-setting="${id}"]`) || tray.querySelector(`[data-setting="${id}"]`))
     .filter(Boolean);
@@ -442,6 +481,8 @@ export function renderSessionPicker() {
     sub.appendChild(meta);
     body.append(title, sub);
     row.appendChild(body);
+    row.addEventListener("pointerenter", () => row.classList.add("is-hover"));
+    row.addEventListener("pointerleave", () => row.classList.remove("is-hover"));
     row.addEventListener("click", () => hooks.attachSession(item.id));
     els.sessionList.appendChild(row);
   }
@@ -471,10 +512,45 @@ export function bindChromeEvents() {
   els.opacity?.addEventListener("change", () => {
     applyOpacity(Number(els.opacity.value) / 100, { persist: true });
   });
-  els.themeSeg?.addEventListener("click", (ev) => {
-    const btn = (ev.target as Element | null)?.closest<HTMLButtonElement>("button[data-theme]");
+  els.speedSeg?.addEventListener("click", (ev) => {
+    const btn = (ev.target as Element | null)?.closest<HTMLButtonElement>("button[data-speed]");
+    if (!btn?.dataset.speed) return;
+    applyAgentSpeed(btn.dataset.speed, { persist: true });
+  });
+  const themeButtonFromEvent = (ev: Event) => {
+    const node = ev.target instanceof Element ? ev.target : (ev.target as Node | null)?.parentElement;
+    const btn = node?.closest<HTMLButtonElement>("button[data-theme]");
+    if (!btn?.dataset.theme) return null;
+    if (els.settingsPicker && !els.settingsPicker.contains(btn)) return null;
+    return btn;
+  };
+  const pickTheme = (btn: HTMLButtonElement) => {
+    const value = btn.dataset.theme;
+    if (!value) return;
+    applyTheme(value, { persist: true });
+  };
+  // Apply on press so a later lost click still switches; close after the gesture.
+  els.settingsPicker?.addEventListener(
+    "pointerdown",
+    (ev) => {
+      const btn = themeButtonFromEvent(ev);
+      if (!btn) return;
+      pickTheme(btn);
+    },
+    true,
+  );
+  els.settingsPicker?.addEventListener("pointerup", (ev) => {
+    const btn = themeButtonFromEvent(ev);
     if (!btn) return;
-    applyTheme(btn.dataset.theme, { persist: true });
+    pickTheme(btn);
+    queueMicrotask(() => setSettingsPickerOpen(false));
+  });
+  els.settingsPicker?.addEventListener("click", (ev) => {
+    const btn = themeButtonFromEvent(ev);
+    if (!btn) return;
+    ev.stopPropagation();
+    pickTheme(btn);
+    setSettingsPickerOpen(false);
   });
   els.followSeg?.addEventListener("click", (ev) => {
     const btn = (ev.target as Element | null)?.closest<HTMLButtonElement>("button[data-follow]");
@@ -551,6 +627,7 @@ export function restoreChrome() {
     });
   }
   applyOpacity(Number(prefGet("opacity") || 0.96));
+  applyAgentSpeed(prefGet("speed") || "medium");
   fetch("/api/prefs")
     .then((res) => (res.ok ? res.json() : null))
     .then((prefs) => {
@@ -559,8 +636,9 @@ export function restoreChrome() {
         setAgentSymbol(prefs.agentSymbol);
       }
       if (prefs?.shape) setShape(prefs.shape, { persist: false, morph: false });
-      if (prefs?.theme) applyTheme(prefs.theme);
+      if (prefs?.theme && !themeUserSet) applyTheme(prefs.theme);
       if (typeof prefs?.opacity === "number") applyOpacity(prefs.opacity);
+      if (prefs?.agentSpeed != null) applyAgentSpeed(prefs.agentSpeed);
       if (prefs?.graphFollow) applyFollow(prefs.graphFollow, { persist: false });
       if (typeof prefs?.settingsHidden === "boolean") applySettingsHidden(prefs.settingsHidden, { persist: false });
     })

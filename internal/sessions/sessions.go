@@ -42,6 +42,7 @@ type Hub struct {
 	busy          map[string]bool
 	hooked        map[string]types.SessionRow
 	knownIDs      map[string]bool
+	selectedCwd   string
 	fingerprint   string
 	focusKey      string
 	stop          chan struct{}
@@ -83,16 +84,7 @@ func (h *Hub) snapshotLocked() types.Snapshot {
 	if len(h.Roster) == 0 {
 		return types.EmptySnapshot()
 	}
-	found := false
-	for _, s := range h.Roster {
-		if s.SessionID == h.SelectedID {
-			found = true
-			break
-		}
-	}
-	if h.SelectedID == "" || !found {
-		h.SelectedID = h.Roster[0].SessionID
-	}
+	h.ensureSelectedLocked()
 	var selected types.SessionRow
 	for _, s := range h.Roster {
 		if s.SessionID == h.SelectedID {
@@ -100,8 +92,21 @@ func (h *Hub) snapshotLocked() types.Snapshot {
 			break
 		}
 	}
+	if selected.SessionID == "" && h.SelectedID != "" {
+		selected = types.SessionRow{
+			SessionID: h.SelectedID,
+			Cwd:       h.selectedCwd,
+			Title:     h.SelectedID,
+			Provider:  "grok",
+			Live:      false,
+		}
+	}
 	if selected.SessionID == "" {
 		selected = h.Roster[0]
+		h.SelectedID = selected.SessionID
+	}
+	if selected.Cwd != "" {
+		h.selectedCwd = selected.Cwd
 	}
 	visited := under.UniqueUnder(selected.Cwd, h.visits[selected.SessionID])
 	files := under.UniqueUnder(selected.Cwd, h.files[selected.SessionID])
@@ -191,9 +196,37 @@ func (h *Hub) GetFollowMode() string {
 	return "focus"
 }
 
+func (h *Hub) ensureSelectedLocked() {
+	if len(h.Roster) == 0 {
+		return
+	}
+	if h.SelectedID == "" {
+		h.SelectedID = h.Roster[0].SessionID
+		h.selectedCwd = h.Roster[0].Cwd
+		return
+	}
+	for _, s := range h.Roster {
+		if s.SessionID == h.SelectedID {
+			h.selectedCwd = s.Cwd
+			return
+		}
+	}
+	if h.FollowMode == "project" {
+		return
+	}
+	h.SelectedID = h.Roster[0].SessionID
+	h.selectedCwd = h.Roster[0].Cwd
+}
+
 func (h *Hub) Select(sessionID string) {
 	h.mu.Lock()
 	h.SelectedID = sessionID
+	for _, s := range h.Roster {
+		if s.SessionID == sessionID && s.Cwd != "" {
+			h.selectedCwd = s.Cwd
+			break
+		}
+	}
 	h.syncTailsLocked()
 	snap := h.snapshotLocked()
 	h.mu.Unlock()
@@ -375,9 +408,13 @@ func (h *Hub) scanRosterLocked() {
 				existing.Updates = row.Updates
 			}
 			byID[id] = existing
-		} else {
-			byID[id] = row
+			continue
 		}
+		if row.Provider == "" || row.Provider == "grok" {
+			delete(h.hooked, id)
+			continue
+		}
+		byID[id] = row
 	}
 	h.Roster = types.NewestByID(values(byID))
 }

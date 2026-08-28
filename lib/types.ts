@@ -133,6 +133,7 @@ export type Prefs = {
   shape?: "tree" | "circle" | "neurons";
   theme?: "light" | "dark" | "system";
   opacity?: number;
+  agentSpeed?: number;
   graphFollow?: FollowMode;
   settingsHidden?: boolean;
   sessionId?: string;

@@ -3,7 +3,7 @@ import type { FollowMode, TreeNode } from "../lib/types.ts";
 
 export type { FollowMode };
 export type ThemePref = "light" | "dark" | "system";
-export type LiveKind = "on" | "waiting";
+export type LiveKind = "exploring" | "idle" | "reconnecting";
 
 export type AgentMark = {
   id: string;
@@ -43,7 +43,7 @@ export type LogEntry = {
 };
 
 export type AppState = {
-  mode: "live" | "demo";
+  mode: "live" | "demo" | "replay";
   rootId: string;
   rootPath: string;
   nodes: Map<string, TreeNode>;
@@ -58,11 +58,13 @@ export type AppState = {
   shown: Map<string, string[]>;
   layout: GraphLayout | null;
   log: LogEntry[];
+  trail: LogEntry[];
   accent: string;
   agentSymbol: string | null;
   shape: TrailMode;
   theme: ThemePref;
   opacity: number;
+  agentSpeed: number;
   graphFollow: FollowMode;
   settingsHidden: boolean;
   sessionId: string | null;
@@ -76,7 +78,7 @@ export const INK = "#16161a";
 
 export const PALETTE = [
   { id: "pink", hex: "#ff4fcb" },
-  { id: "red", hex: "#ff4d4d" },
+  { id: "red", hex: "#ff0000" },
   { id: "orange", hex: "#ff8a3a" },
   { id: "yellow", hex: "#f5d76e" },
   { id: "green", hex: "#3ddc97" },
@@ -91,8 +93,41 @@ export const SHAPES = [
   { id: "neurons" as const, label: "Neurons", title: "Neural arbor" },
 ];
 
+export const SPEED_PRESETS = [
+  { id: "slow" as const, label: "Slow", rate: 0.72, title: "A little slower than the old default" },
+  { id: "medium" as const, label: "Medium", rate: 1.4, title: "A little faster than the old default" },
+  { id: "fast" as const, label: "Fast", rate: 3.4, title: "Much faster walks" },
+];
+
+export type SpeedPreset = (typeof SPEED_PRESETS)[number]["id"];
+
+export function nearestSpeed(value: unknown): SpeedPreset {
+  if (value === "slow" || value === "medium" || value === "fast") return value;
+  if (value == null || value === "") return "medium";
+  const n = Number(value);
+  if (!Number.isFinite(n)) return "medium";
+  // Legacy slider default was 1.0 — treat that as Medium.
+  if (Math.abs(n - 1) < 0.05) return "medium";
+  let best: SpeedPreset = "medium";
+  let bestDist = Infinity;
+  for (const preset of SPEED_PRESETS) {
+    const dist = Math.abs(n - preset.rate);
+    if (dist < bestDist) {
+      bestDist = dist;
+      best = preset.id;
+    }
+  }
+  return best;
+}
+
+export function speedRate(value: unknown): number {
+  const preset = SPEED_PRESETS.find((item) => item.id === nearestSpeed(value));
+  return preset?.rate || 1.4;
+}
+
 export function nearestPalette(hex: string | null | undefined): string {
   const want = String(hex || "").toLowerCase();
+  if (want === "#ff4d4d") return "#ff0000";
   const exact = PALETTE.find((c) => c.hex === want);
   if (exact) return exact.hex;
   const toRgb = (h: string) => [
@@ -117,7 +152,7 @@ export function nearestPalette(hex: string | null | undefined): string {
 export function whisperName(name: unknown): string {
   const raw = String(name || "").replace(/[_-]+/g, " ").trim();
   if (raw.length <= 16) return raw;
-  return raw.slice(0, 15);
+  return `${raw.slice(0, 15)}…`;
 }
 
 export function shortLabel(label: unknown, id: unknown): string {

@@ -121,7 +121,7 @@ func TestLiveCLIAlongsideOrca(t *testing.T) {
 	cliCwd := "/Users/me/other"
 	pid := os.Getpid()
 	write(t, filepath.Join(home, "active_sessions.json"),
-		`[{"session_id":"`+orcaID+`","pid":`+itoa(pid)+`,"cwd":"`+cwd+`","opened_at":"2026-01-01T00:00:00Z"},`+
+		`[{"session_id":"`+orcaID+`","pid":0,"cwd":"`+cwd+`","opened_at":"2026-01-01T00:00:00Z"},`+
 			`{"session_id":"`+cliID+`","pid":`+itoa(pid)+`,"cwd":"`+cliCwd+`","opened_at":"2026-01-01T00:00:00Z"}]`)
 	writeGrokSession(t, home, orcaID, cwd, orcaID, "{}\n", pid)
 	writeGrokSession(t, home, cliID, cliCwd, cliID, "{}\n", pid)
@@ -186,7 +186,6 @@ func TestOrcaMissingFromActive(t *testing.T) {
 	liveID := "01dddddddddddddddddddddddddd"
 	cwd := "/Users/me/other"
 	writeGrokSession(t, home, liveID, cwd, "Live tab", "", 0)
-	write(t, filepath.Join(home, "active_sessions.json"), `[]`)
 	orcaFile := filepath.Join(home, "orca-data.json")
 	writeOrca(t, orcaFile, `{
 		"workspaceSession": {
@@ -205,6 +204,103 @@ func TestOrcaMissingFromActive(t *testing.T) {
 	if len(list) != 1 || list[0].SessionID != liveID || list[0].Title != "Live tab" {
 		t.Fatalf("%v", list)
 	}
+}
+
+func TestEmptyActiveDropsOrcaLeftover(t *testing.T) {
+	home := tmpHome(t)
+	liveID := "01dddddddddddddddddddddddddd"
+	cwd := "/Users/me/other"
+	writeGrokSession(t, home, liveID, cwd, "Live tab", "", 0)
+	write(t, filepath.Join(home, "active_sessions.json"), `[]`)
+	orcaFile := filepath.Join(home, "orca-data.json")
+	writeOrca(t, orcaFile, `{
+		"workspaceSession": {
+			"tabsByWorktree": {"abc::/Users/me/other": [{"id": "tab-2"}]},
+			"sleepingAgentSessionsByPaneKey": {
+				"tab-2:leaf-2": {
+					"tabId": "tab-2",
+					"worktreeId": "abc::/Users/me/other",
+					"providerSession": {"key": "session_id", "id": "`+liveID+`"}
+				}
+			}
+		}
+	}`)
+	panes, _ := orca.ReadLivePanes(orcaFile)
+	list := roster.ReadActiveSessions(home, panes, true)
+	if len(list) != 0 {
+		t.Fatalf("%v", list)
+	}
+}
+
+func TestDropDeadHostNotOnOrca(t *testing.T) {
+	home := tmpHome(t)
+	id := "01aaaaaaaaaaaaaaaaaaaaaaaaaa"
+	cwd := "/Users/me/proj"
+	writeGrokSession(t, home, id, cwd, "Dead", "{}\n", 0)
+	write(t, filepath.Join(home, "active_sessions.json"),
+		`[{"session_id":"`+id+`","pid":999999,"cwd":"`+cwd+`","opened_at":"2026-01-01T00:00:00Z"}]`)
+	list := roster.ReadActiveSessions(home, map[string]orca.Pane{}, true)
+	if len(list) != 0 {
+		t.Fatalf("%v", list)
+	}
+}
+
+func TestDropSharedPidNotOnOrca(t *testing.T) {
+	home := tmpHome(t)
+	liveID := "01bbbbbbbbbbbbbbbbbbbbbbbbbb"
+	staleID := "01cccccccccccccccccccccccccc"
+	cwd := "/Users/me/proj"
+	pid := os.Getpid()
+	write(t, filepath.Join(home, "active_sessions.json"),
+		`[{"session_id":"`+liveID+`","pid":`+itoa(pid)+`,"cwd":"`+cwd+`","opened_at":"2026-01-01T00:00:00Z"},`+
+			`{"session_id":"`+staleID+`","pid":`+itoa(pid)+`,"cwd":"`+cwd+`","opened_at":"2026-01-01T00:00:00Z"}]`)
+	writeGrokSession(t, home, liveID, cwd, "Live", "{}\n", pid)
+	writeGrokSession(t, home, staleID, cwd, "Stale", "{}\n", pid)
+	orcaFile := filepath.Join(home, "orca-data.json")
+	writeOrca(t, orcaFile, `{
+		"workspaceSession": {
+			"tabsByWorktree": {"abc::/Users/me/proj": [{"id": "tab-live"}]},
+			"sleepingAgentSessionsByPaneKey": {
+				"tab-live:leaf-1": {
+					"tabId": "tab-live",
+					"worktreeId": "abc::/Users/me/proj",
+					"providerSession": {"key": "session_id", "id": "`+liveID+`"}
+				}
+			}
+		}
+	}`)
+	panes, _ := orca.ReadLivePanes(orcaFile)
+	list := roster.ReadActiveSessions(home, panes, true)
+	if len(list) != 1 || list[0].SessionID != liveID {
+		t.Fatalf("%v", list)
+	}
+}
+
+func TestDropTerminatedGrokFromRoster(t *testing.T) {
+	home := tmpHome(t)
+	cwd := "/Users/me/proj"
+	id := "01aaaaaaaaaaaaaaaaaaaaaaaaaa"
+	pid := os.Getpid()
+	writeGrokSession(t, home, id, cwd, "Live", "{}\n", pid)
+	write(t, filepath.Join(home, "active_sessions.json"),
+		`[{"session_id":"`+id+`","pid":`+itoa(pid)+`,"cwd":"`+cwd+`","opened_at":"2026-01-01T00:00:00Z"}]`)
+	hub := New(home, func(any) {})
+	hub.NoteHook(map[string]any{
+		"session_id":      id,
+		"cwd":             cwd,
+		"pid":             pid,
+		"hook_event_name": "UserPromptSubmit",
+	})
+	hub.ScanRoster()
+	if len(hub.Roster) != 1 {
+		t.Fatalf("start %v", hub.Roster)
+	}
+	write(t, filepath.Join(home, "active_sessions.json"), `[]`)
+	hub.ScanRoster()
+	if len(hub.Roster) != 0 {
+		t.Fatalf("still listed %v", hub.Roster)
+	}
+	hub.Stop()
 }
 
 func TestIgnoreClosedTab(t *testing.T) {
@@ -619,6 +715,34 @@ func TestProjectFollowStays(t *testing.T) {
 	hub.Refresh(false)
 	if hub.SelectedID != a {
 		t.Fatal(hub.SelectedID)
+	}
+	hub.Stop()
+}
+
+func TestProjectFollowKeepsSessionWhenRosterChanges(t *testing.T) {
+	home := tmpHome(t)
+	pid := os.Getpid()
+	a := "01aaaaaaaaaaaaaaaaaaaaaaaaaa"
+	b := "01bbbbbbbbbbbbbbbbbbbbbbbbbb"
+	writeGrokSession(t, home, a, "/Users/me/proj", a, "", pid)
+	write(t, filepath.Join(home, "active_sessions.json"),
+		`[{"session_id":"`+a+`","pid":`+itoa(pid)+`,"cwd":"/Users/me/proj","opened_at":"2026-01-01T00:00:00Z"}]`)
+	hub := New(home, func(any) {})
+	hub.FollowMode = "project"
+	hub.Refresh(true)
+	if hub.SelectedID != a {
+		t.Fatal(hub.SelectedID)
+	}
+	writeGrokSession(t, home, b, "/Users/me/other", b, "", pid)
+	write(t, filepath.Join(home, "active_sessions.json"),
+		`[{"session_id":"`+b+`","pid":`+itoa(pid)+`,"cwd":"/Users/me/other","opened_at":"2026-01-01T00:04:00Z"}]`)
+	hub.Refresh(false)
+	if hub.SelectedID != a {
+		t.Fatalf("jumped to %s", hub.SelectedID)
+	}
+	snap := hub.Snapshot()
+	if snap.SessionID == nil || *snap.SessionID != a {
+		t.Fatalf("snapshot %v", snap.SessionID)
 	}
 	hub.Stop()
 }

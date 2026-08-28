@@ -321,8 +321,18 @@ final class PickerShield: NSView {
 
   override func hitTest(_ point: NSPoint) -> NSView? {
     if isHidden { return nil }
-    if hole.contains(point) { return nil }
-    return super.hitTest(point)
+    // Never steal web-content clicks (settings/session pickers, scrim). Only
+    // title-bar chrome is captured so a press there can dismiss.
+    guard let parent = superview else { return nil }
+    let inParent = convert(point, to: parent)
+    for view in parent.subviews {
+      if view === self || view.isHidden { continue }
+      if view is GrabBar || view is ChromeIcon || view is ResizeGrip {
+        let local = parent.convert(inParent, to: view)
+        if view.bounds.contains(local) { return self }
+      }
+    }
+    return nil
   }
 
   override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }

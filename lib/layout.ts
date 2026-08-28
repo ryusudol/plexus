@@ -508,19 +508,21 @@ export function clampCameraToGraph({
 
 /**
  * Zoom-to-fit a graph bbox so its center sits on the view center.
- * Left/right (and top/bottom) insets stay equal — extra pad on one side
- * would park the graph off-center.
+ * Left/right insets stay equal. Bottom can be tighter than top so the
+ * graph does not sit on a large empty band under the stage.
  */
 export function fitCameraToBounds({
   bounds,
   view,
   pad = 22,
+  padBottom,
   minK = 0.22,
   maxK = 1.7,
 }: {
   bounds?: Bounds | null;
   view?: Partial<ViewSize> | null;
   pad?: number;
+  padBottom?: number;
   minK?: number;
   maxK?: number;
 }): Camera | null {
@@ -529,13 +531,15 @@ export function fitCameraToBounds({
   if (w < 80 || h < 80 || !bounds) return null;
   const bw = Math.max(1, bounds.maxX - bounds.minX);
   const bh = Math.max(1, bounds.maxY - bounds.minY);
-  const inset = Math.max(0, pad);
-  const k = Math.max(minK, Math.min(maxK, (w - inset * 2) / bw, (h - inset * 2) / bh));
+  const insetX = Math.max(0, pad);
+  const insetTop = Math.max(0, pad);
+  const insetBottom = Math.max(0, padBottom ?? pad);
+  const k = Math.max(minK, Math.min(maxK, (w - insetX * 2) / bw, (h - insetTop - insetBottom) / bh));
   const cx = (bounds.minX + bounds.maxX) / 2;
   const cy = (bounds.minY + bounds.maxY) / 2;
   return {
     x: w / 2 - cx * k,
-    y: h / 2 - cy * k,
+    y: insetTop + (h - insetTop - insetBottom) / 2 - cy * k,
     k,
   };
 }

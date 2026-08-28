@@ -27,6 +27,7 @@ export const els = {
   colorCurrent: document.getElementById("color-current") as HTMLElement | null,
   opacity: document.getElementById("opacity") as HTMLInputElement | null,
   opacityOut: document.getElementById("opacity-out"),
+  speedSeg: document.getElementById("speed-seg"),
   themeSeg: document.getElementById("theme-seg"),
   shape: document.getElementById("shape") as HTMLElement | null,
   center: document.getElementById("btn-center") as HTMLElement | null,
@@ -64,11 +65,13 @@ export const state: AppState = {
   shown: new Map(),
   layout: null,
   log: [],
+  trail: [],
   accent: DEFAULT_ACCENT,
   agentSymbol: null,
   shape: "neurons",
   theme: "system",
   opacity: 0.96,
+  agentSpeed: 1.4,
   graphFollow: "focus",
   settingsHidden: false,
   sessionId: null,
@@ -145,6 +148,7 @@ export function savePrefs(extra: Record<string, unknown> = {}) {
     shape: state.shape,
     theme: state.theme,
     opacity: state.opacity,
+    agentSpeed: state.agentSpeed,
     graphFollow: state.graphFollow,
     settingsHidden: state.settingsHidden,
     ...extra,
@@ -153,6 +157,7 @@ export function savePrefs(extra: Record<string, unknown> = {}) {
   prefSet("shape", state.shape);
   prefSet("theme", state.theme);
   prefSet("opacity", String(state.opacity));
+  prefSet("speed", String(state.agentSpeed));
   prefSet("follow", state.graphFollow);
   prefSet("settings", state.settingsHidden ? "off" : "on");
   prefSet("face", state.agentSymbol);
@@ -217,10 +222,23 @@ export function inRoot(folder: string | null | undefined) {
   return pathUnder(state.rootPath, folder);
 }
 
-export function setLive(kind: LiveKind | string, text: string) {
+const LIVE_LABEL: Record<LiveKind, string> = {
+  exploring: "Exploring",
+  idle: "Idle",
+  reconnecting: "Reconnecting",
+};
+
+export function setLive(kind: LiveKind) {
   if (!els.liveStatus) return;
   els.liveStatus.className = `live ${kind}`;
-  els.liveStatus.textContent = text;
+  let text = els.liveStatus.querySelector(".live-text");
+  if (!text) {
+    els.liveStatus.textContent = "";
+    text = document.createElement("span");
+    text.className = "live-text";
+    els.liveStatus.appendChild(text);
+  }
+  text.textContent = LIVE_LABEL[kind];
 }
 
 export function pushLog(entry: LogEntry) {
