@@ -111,15 +111,18 @@ function handleHookPayload(payload: string | VisitEvent): {
   const agentId = provider === "grok" || !nativeId ? nativeId : `${provider}:${nativeId}`;
   if (visit?.workspaceRoot) setRoot(visit.workspaceRoot);
   if (visit?.folderPath) {
-    broadcast({
-      type: "visit",
-      agentId: agentId || visit.agentId,
-      agentLabel: visit.agentLabel || provider || "agent",
-      folderPath: visit.folderPath,
-      filePath: visit.filePath,
-      toolName: visit.toolName,
-      ts: visit.ts,
-    });
+    const id = agentId || visit.agentId;
+    if (!hub.selectedId || id === hub.selectedId) {
+      broadcast({
+        type: "visit",
+        agentId: id,
+        agentLabel: visit.agentLabel || provider || "agent",
+        folderPath: visit.folderPath,
+        filePath: visit.filePath,
+        toolName: visit.toolName,
+        ts: visit.ts,
+      });
+    }
   }
   return {
     ok: true,

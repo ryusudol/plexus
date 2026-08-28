@@ -5,8 +5,8 @@ export type Bounds = { minX: number; minY: number; maxX: number; maxY: number };
 export type TrailMode = "tree" | "circle" | "neurons";
 
 export function parseTrailMode(value: unknown): TrailMode {
-  if (value === "circle" || value === "neurons") return value;
-  return "tree";
+  if (value === "tree" || value === "circle" || value === "neurons") return value;
+  return "neurons";
 }
 
 export type NodePos = {
@@ -291,7 +291,7 @@ export function layoutNeurons({
 }
 
 export function layoutTrail({
-  mode = "tree",
+  mode = "neurons",
   rootId,
   getShownChildren,
 }: {
@@ -377,7 +377,7 @@ function attachOnNeuron(parentPos: NodePos, siblingPositions: NodePos[]): NodePo
 export function attachChild(
   parentPos: NodePos,
   siblingPositions: NodePos[] = [],
-  { mode = "tree" }: { mode?: TrailMode | string } = {},
+  { mode = "neurons" }: { mode?: TrailMode | string } = {},
 ): NodePos {
   const kind = parseTrailMode(mode);
   if (kind === "circle") return attachOnCircle(parentPos, siblingPositions);

@@ -8,7 +8,7 @@ import type { Prefs } from "../lib/types.ts";
 const PREFS_FILE = path.join(plexusDir(), "prefs.json");
 
 export function readPrefs(): Prefs {
-  return readJsonFile<Prefs>(PREFS_FILE, { accent: "#ff4fcb" });
+  return readJsonFile<Prefs>(PREFS_FILE, { accent: "#ff4fcb", shape: "neurons" });
 }
 
 export function writePrefs(next: Prefs): Prefs {

@@ -1,9 +1,9 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { LIVE_MS } from "../lib/config.ts";
+import { FOCUS_MS, LIVE_MS, REFRESH_DEBOUNCE_MS, ROSTER_MS } from "../lib/config.ts";
 import { inferProvider } from "../lib/extract.ts";
-import { pathUnder, pathsOverlap, uniquePush, uniqueUnder } from "../lib/under.ts";
+import { pathUnder, uniquePush, uniqueUnder } from "../lib/under.ts";
 import {
   emptySnapshot,
   type FollowMode,
@@ -59,10 +59,13 @@ export class SessionHub {
   rosterWatcher: fs.FSWatcher | null = null;
   orcaWatchers: fs.FSWatcher[] = [];
   poll: ReturnType<typeof setInterval> | null = null;
+  focusPoll: ReturnType<typeof setInterval> | null = null;
   refreshTimer: ReturnType<typeof setTimeout> | null = null;
   fingerprint = "";
   followMode: FollowMode = "focus";
   lastFocusedId: string | null = null;
+  focusKey = "";
+  knownIds = new Set<string>();
   hooked = new Map<string, SessionRow>();
 
   constructor({ home = grokHome(), emit }: { home?: string; emit?: (event: HubEvent) => void } = {}) {
@@ -78,14 +81,8 @@ export class SessionHub {
       this.selectedId = roster[0].session_id;
     }
     const selected = roster.find((s) => s.session_id === this.selectedId) || roster[0];
-    const visited = uniqueUnder(
-      selected.cwd,
-      roster.map((session) => this.visits.get(session.session_id)),
-    );
-    const files = uniqueUnder(
-      selected.cwd,
-      roster.map((session) => this.files.get(session.session_id)),
-    );
+    const visited = uniqueUnder(selected.cwd, [this.visits.get(selected.session_id)]);
+    const files = uniqueUnder(selected.cwd, [this.files.get(selected.session_id)]);
     const last = this.lastFolder.get(selected.session_id);
     const lastFile = this.lastFile.get(selected.session_id);
     const folderPath = last && pathUnder(selected.cwd, last) ? last : selected.cwd;
@@ -113,7 +110,7 @@ export class SessionHub {
       ],
       visited,
       files,
-      busy: roster.some((s) => this.busy.get(s.session_id) && pathsOverlap(s.cwd, selected.cwd)),
+      busy: Boolean(this.busy.get(selected.session_id)),
       pids: [...new Set([...roster.map((s) => s.pid).filter((pid): pid is number => Boolean(pid)), ...listAgentPids()])],
       followMode: this.followMode === "project" ? "project" : "focus",
     };
@@ -186,18 +183,22 @@ export class SessionHub {
 
   start(): void {
     this.refresh({ force: true });
+    const onChange = () => this.scheduleRefresh();
     try {
-      this.rosterWatcher = fs.watch(path.join(this.home, "active_sessions.json"), () => {
-        this.scheduleRefresh();
-      });
+      this.rosterWatcher = fs.watch(path.join(this.home, "active_sessions.json"), onChange);
     } catch {
       this.rosterWatcher = null;
     }
+    const watched = new Set<string>();
     for (const file of orcaDataFiles()) {
-      try {
-        this.orcaWatchers.push(fs.watch(file, () => this.scheduleRefresh()));
-      } catch {
-        // skip
+      for (const target of [file, path.dirname(file)]) {
+        if (watched.has(target)) continue;
+        watched.add(target);
+        try {
+          this.orcaWatchers.push(fs.watch(target, onChange));
+        } catch {
+          // skip
+        }
       }
     }
     for (const dir of [
@@ -205,15 +206,17 @@ export class SessionHub {
       path.join(os.homedir(), ".codex", "sessions"),
     ]) {
       try {
-        this.orcaWatchers.push(fs.watch(dir, { recursive: true }, () => this.scheduleRefresh()));
+        this.orcaWatchers.push(fs.watch(dir, { recursive: true }, onChange));
       } catch {
         // skip
       }
     }
+    this.focusPoll = setInterval(() => this.pollFocus(), FOCUS_MS);
+    this.focusPoll.unref?.();
     this.poll = setInterval(() => {
       for (const tail of this.tails.values()) tail.readNew();
       this.refresh();
-    }, 750);
+    }, ROSTER_MS);
     this.poll.unref?.();
   }
 
@@ -222,6 +225,7 @@ export class SessionHub {
     for (const watcher of this.orcaWatchers) watcher.close();
     this.orcaWatchers = [];
     if (this.refreshTimer) clearTimeout(this.refreshTimer);
+    if (this.focusPoll) clearInterval(this.focusPoll);
     if (this.poll) clearInterval(this.poll);
     for (const tail of this.tails.values()) tail.stop();
     this.tails.clear();
@@ -232,7 +236,7 @@ export class SessionHub {
     this.refreshTimer = setTimeout(() => {
       this.refreshTimer = null;
       this.refresh();
-    }, 120);
+    }, REFRESH_DEBOUNCE_MS);
   }
 
   scanRoster(): void {
@@ -274,14 +278,44 @@ export class SessionHub {
     return true;
   }
 
+  pollFocus(): boolean {
+    if (this.followMode === "project") return false;
+    const hint = readOrcaFocus();
+    const key = `${hint?.sessionId || ""}|${hint?.cwd || ""}`;
+    if (key === this.focusKey) return false;
+    if (hint?.sessionId && !this.roster.some((session) => session.session_id === hint.sessionId)) {
+      this.scanRoster();
+    }
+    this.focusKey = key;
+    if (!this.followFocus(hint)) return false;
+    this.syncTails();
+    this.emit({ type: "snapshot", ...this.snapshot() });
+    this.emitActivity();
+    return true;
+  }
+
+  followNewSession(): boolean {
+    const live = new Set(this.roster.map((session) => session.session_id));
+    const added = this.knownIds.size
+      ? this.roster.filter((session) => !this.knownIds.has(session.session_id))
+      : [];
+    this.knownIds = live;
+    if (this.followMode === "project" || !added.length) return false;
+    const newest = added[0];
+    if (!newest || newest.session_id === this.selectedId) return false;
+    this.selectedId = newest.session_id;
+    return true;
+  }
+
   refresh({ force = false } = {}): void {
     this.scanRoster();
     const fingerprint = rosterFingerprint(this.roster);
     const rosterChanged = fingerprint !== this.fingerprint;
     this.fingerprint = fingerprint;
     const focusedChanged = this.followFocus();
+    const spawned = this.followNewSession();
     this.syncTails();
-    if (force || rosterChanged || focusedChanged) {
+    if (force || rosterChanged || focusedChanged || spawned) {
       this.emit({ type: "snapshot", ...this.snapshot() });
       this.emitActivity();
     }
@@ -328,7 +362,7 @@ export class SessionHub {
       this.emit({ type: "activity", active: false, sessionId: null });
       return;
     }
-    const active = this.roster.some((s) => this.busy.get(s.session_id) && pathsOverlap(s.cwd, selected.cwd));
+    const active = Boolean(this.busy.get(selected.session_id));
     this.emit({
       type: "activity",
       active,
@@ -373,8 +407,7 @@ export class SessionHub {
       }
       if (!live) continue;
       const selected = this.roster.find((s) => s.session_id === this.selectedId);
-      const loc = file || folder;
-      if (selected && !pathUnder(selected.cwd, loc)) continue;
+      if (!selected || selected.session_id !== session.session_id) continue;
       this.emit({
         type: "visit",
         agentId: session.session_id,

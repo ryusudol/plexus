@@ -537,7 +537,7 @@ export function bindChromeEvents() {
 export function restoreChrome() {
   setAccent(prefGet("accent") || DEFAULT_ACCENT);
   setAgentSymbol(prefGet("face"));
-  setShape(prefGet("shape") || "tree", { persist: false, morph: false });
+  setShape(prefGet("shape") || "neurons", { persist: false, morph: false });
   applyTheme(prefGet("theme") || "system");
   applyFollow(prefGet("follow") || "focus", { persist: false });
   applySettingsHidden(prefGet("settings") === "off", { persist: false });

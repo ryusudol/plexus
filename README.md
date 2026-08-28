@@ -6,7 +6,7 @@ It attaches to live sessions from **Grok Build**, **Claude Code**, and **OpenAI 
 
 Grok sessions come from `~/.grok/active_sessions.json` (including CLI sessions in Terminal, iTerm, Ghostty, and similar — not only Orca) plus each session’s `updates.jsonl`. Claude Code and Codex attach through their PreToolUse hooks and recent local transcripts (`~/.claude/projects`, `~/.codex/sessions`). A session that is already mid-turn still shows up — including the folders it already touched. The window is a non-activating panel, so the agent keeps the keyboard.
 
-The panel appears only while the related agent session is the focused Mac app (Orca / Grok Build, Claude Code, Codex, or the terminal hosting that process) — switch to Mail or Safari and it tucks away. The map is a neural arbor: no boxes, pink names on visited folders (customizable), organic branches, camera fitted to the whole trail. Click the second circle in the header to set an agent face (your character); Shift-click resets it.
+The panel appears only while the related agent session is the focused Mac app (Orca / Grok Build, Claude Code, Codex, or the terminal hosting that process) — switch to Mail or Safari and it tucks away. While an agent is focused, the panel is the default; Esc collapses it to the orb. The map is a neural arbor: no boxes, pink names on visited folders (customizable), organic branches, camera fitted to the whole trail. Click the second circle in the header to set an agent face (your character); Shift-click resets it.
 
 ## Run
 

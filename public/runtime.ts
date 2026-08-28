@@ -66,7 +66,7 @@ export const state: AppState = {
   log: [],
   accent: DEFAULT_ACCENT,
   agentSymbol: null,
-  shape: "tree",
+  shape: "neurons",
   theme: "system",
   opacity: 0.96,
   graphFollow: "focus",
@@ -84,6 +84,7 @@ export const flags = {
   camGen: 0,
   morphGen: 0,
   trailEpoch: 0,
+  snapshotGen: 0,
   lastStage: { w: 0, h: 0 },
   instrumentBusy: false,
 };

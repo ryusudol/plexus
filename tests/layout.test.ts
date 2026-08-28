@@ -33,7 +33,8 @@ describe("parseTrailMode", () => {
     assert.equal(parseTrailMode("tree"), "tree");
     assert.equal(parseTrailMode("circle"), "circle");
     assert.equal(parseTrailMode("neurons"), "neurons");
-    assert.equal(parseTrailMode("nope"), "tree");
+    assert.equal(parseTrailMode("nope"), "neurons");
+    assert.equal(parseTrailMode(undefined), "neurons");
   });
 });
 
@@ -43,6 +44,17 @@ describe("trail layouts", () => {
     const mean = radii.reduce((sum, r) => sum + r, 0) / radii.length;
     for (const r of radii) {
       assert.ok(Math.abs(r - mean) < 0.001);
+    }
+  });
+
+  it("defaults to neurons when mode is omitted", () => {
+    const implied = layoutTrail({ rootId: "root", getShownChildren });
+    const explicit = layoutTrail({ mode: "neurons", rootId: "root", getShownChildren });
+    for (const [id, pos] of explicit.pos) {
+      const other = implied.pos.get(id);
+      assert.ok(other);
+      assert.equal(pos.x, other.x);
+      assert.equal(pos.y, other.y);
     }
   });
 

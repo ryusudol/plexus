@@ -443,6 +443,85 @@ describe("focused Orca session", () => {
     assert.equal(hub.lastFocusedId, "other");
   });
 
+  it("follows Orca session id when two sessions share a folder", () => {
+    const hub = new SessionHub({ emit: () => {} });
+    hub.followMode = "focus";
+    hub.selectedId = "keep";
+    hub.lastFocusedId = "keep";
+    hub.roster = [
+      { session_id: "keep", cwd: "/a", live: true, mtime: 1 },
+      { session_id: "other", cwd: "/a", live: true, mtime: 9 },
+    ];
+    assert.equal(hub.followFocus({ cwd: "/a", sessionId: "keep" }), false);
+    assert.equal(hub.selectedId, "keep");
+    assert.equal(hub.followFocus({ cwd: "/a", sessionId: "other" }), true);
+    assert.equal(hub.selectedId, "other");
+  });
+
+  it("pollFocus emits a snapshot as soon as Orca focus changes", () => {
+    const home = fs.mkdtempSync(path.join(os.tmpdir(), "plexus-focus-poll-"));
+    const orca = path.join(home, "orca-data.json");
+    const prev = process.env.ORCA_DATA_FILE;
+    process.env.ORCA_DATA_FILE = orca;
+    const writeFocus = (id: string, cwd: string) => {
+      fs.writeFileSync(
+        orca,
+        JSON.stringify({
+          workspaceSession: {
+            activeWorktreeId: `wt::${cwd}`,
+            activeTabId: "tab-1",
+            tabsByWorktree: { [`wt::${cwd}`]: [{ id: "tab-1" }] },
+            terminalLayoutsByTabId: { "tab-1": { activeLeafId: "leaf" } },
+            sleepingAgentSessionsByPaneKey: {
+              "tab-1:leaf": {
+                tabId: "tab-1",
+                worktreeId: `wt::${cwd}`,
+                providerSession: { id },
+              },
+            },
+          },
+        }),
+      );
+    };
+    try {
+      writeFocus("keep", "/a");
+      for (const row of [
+        { session_id: "keep", cwd: "/a" },
+        { session_id: "other", cwd: "/b" },
+      ]) {
+        const dir = path.join(home, "sessions", encodeCwd(row.cwd), row.session_id);
+        fs.mkdirSync(dir, { recursive: true });
+        fs.writeFileSync(path.join(dir, "summary.json"), JSON.stringify({ generated_title: row.session_id }));
+        fs.writeFileSync(path.join(dir, "updates.jsonl"), "");
+      }
+      fs.writeFileSync(
+        path.join(home, "active_sessions.json"),
+        JSON.stringify([
+          { session_id: "keep", pid: process.pid, cwd: "/a", opened_at: "2026-01-01T00:00:00Z" },
+          { session_id: "other", pid: process.pid, cwd: "/b", opened_at: "2026-01-01T00:01:00Z" },
+        ]),
+      );
+      const events: Array<{ type?: string; sessionId?: string | null }> = [];
+      const hub = new SessionHub({ home, emit: (event) => events.push(event) });
+      hub.followMode = "focus";
+      hub.scanRoster();
+      hub.selectedId = "keep";
+      hub.lastFocusedId = "keep";
+      assert.equal(hub.pollFocus(), false);
+      writeFocus("other", "/b");
+      assert.equal(hub.pollFocus(), true);
+      assert.equal(hub.selectedId, "other");
+      assert.equal(
+        events.some((event) => event.type === "snapshot" && event.sessionId === "other"),
+        true,
+      );
+      hub.stop();
+    } finally {
+      if (prev === undefined) delete process.env.ORCA_DATA_FILE;
+      else process.env.ORCA_DATA_FILE = prev;
+    }
+  });
+
   it("follows the focused session when the current selection is gone", () => {
     const hub = new SessionHub({ emit: () => {} });
     hub.followMode = "focus";
@@ -615,6 +694,130 @@ describe("visit trail snapshot", () => {
     assert.deepEqual(snap.files, [`${cwd}/src/app.ts`]);
     assert.equal(snap.agents[0].filePath, `${cwd}/src/app.ts`);
     assert.equal(snap.agents[0].folderPath, `${cwd}/src`);
+    hub.stop();
+  });
+
+  it("keeps each session's trail on its own graph, even in the same folder", () => {
+    const home = fs.mkdtempSync(path.join(os.tmpdir(), "plexus-per-session-"));
+    const cwd = "/Users/me/proj";
+    const a = "01aaaaaaaaaaaaaaaaaaaaaaaaaa";
+    const b = "01bbbbbbbbbbbbbbbbbbbbbbbbbb";
+    const tool = (id: string, file: string) =>
+      JSON.stringify({
+        params: {
+          update: {
+            sessionUpdate: "tool_call",
+            toolCallId: id,
+            rawInput: { target_file: file },
+            _meta: { "x.ai/tool": { name: "read_file" } },
+          },
+        },
+      });
+    for (const row of [
+      { id: a, file: `${cwd}/src/a.ts` },
+      { id: b, file: `${cwd}/lib/b.ts` },
+    ]) {
+      const dir = path.join(home, "sessions", encodeCwd(cwd), row.id);
+      fs.mkdirSync(dir, { recursive: true });
+      fs.writeFileSync(path.join(dir, "summary.json"), JSON.stringify({ generated_title: row.id, agent_name: "grok-build" }));
+      fs.writeFileSync(path.join(dir, "updates.jsonl"), `${tool("t1", row.file)}\n`);
+    }
+    fs.writeFileSync(
+      path.join(home, "active_sessions.json"),
+      JSON.stringify([
+        { session_id: a, pid: process.pid, cwd, opened_at: "2026-01-01T00:00:00Z" },
+        { session_id: b, pid: process.pid, cwd, opened_at: "2026-01-01T00:01:00Z" },
+      ]),
+    );
+    const hub = new SessionHub({ home, emit: () => {} });
+    hub.scanRoster();
+    hub.selectedId = a;
+    hub.syncTails();
+    assert.deepEqual(hub.snapshot().visited, [`${cwd}/src`]);
+    assert.deepEqual(hub.snapshot().files, [`${cwd}/src/a.ts`]);
+    hub.select(b);
+    assert.equal(hub.snapshot().sessionId, b);
+    assert.deepEqual(hub.snapshot().visited, [`${cwd}/lib`]);
+    assert.deepEqual(hub.snapshot().files, [`${cwd}/lib/b.ts`]);
+    hub.stop();
+  });
+
+  it("starts a new session on an empty graph", () => {
+    const home = fs.mkdtempSync(path.join(os.tmpdir(), "plexus-new-session-"));
+    const cwd = "/Users/me/proj";
+    const a = "01cccccccccccccccccccccccccc";
+    const b = "01dddddddddddddddddddddddddd";
+    const dirA = path.join(home, "sessions", encodeCwd(cwd), a);
+    fs.mkdirSync(dirA, { recursive: true });
+    fs.writeFileSync(path.join(dirA, "summary.json"), JSON.stringify({ generated_title: "Old", agent_name: "grok-build" }));
+    fs.writeFileSync(
+      path.join(dirA, "updates.jsonl"),
+      `${JSON.stringify({
+        params: {
+          update: {
+            sessionUpdate: "tool_call",
+            toolCallId: "t1",
+            rawInput: { target_file: `${cwd}/src/a.ts` },
+            _meta: { "x.ai/tool": { name: "read_file" } },
+          },
+        },
+      })}\n`,
+    );
+    fs.writeFileSync(
+      path.join(home, "active_sessions.json"),
+      JSON.stringify([{ session_id: a, pid: process.pid, cwd, opened_at: "2026-01-01T00:00:00Z" }]),
+    );
+    const hub = new SessionHub({ home, emit: () => {} });
+    hub.followMode = "focus";
+    hub.refresh({ force: true });
+    assert.equal(hub.selectedId, a);
+    assert.deepEqual(hub.snapshot().files, [`${cwd}/src/a.ts`]);
+    const dirB = path.join(home, "sessions", encodeCwd(cwd), b);
+    fs.mkdirSync(dirB, { recursive: true });
+    fs.writeFileSync(path.join(dirB, "summary.json"), JSON.stringify({ generated_title: "New", agent_name: "grok-build" }));
+    fs.writeFileSync(path.join(dirB, "updates.jsonl"), "");
+    fs.writeFileSync(
+      path.join(home, "active_sessions.json"),
+      JSON.stringify([
+        { session_id: a, pid: process.pid, cwd, opened_at: "2026-01-01T00:00:00Z" },
+        { session_id: b, pid: process.pid, cwd, opened_at: "2026-01-01T00:02:00Z" },
+      ]),
+    );
+    hub.refresh();
+    assert.equal(hub.selectedId, b);
+    assert.deepEqual(hub.snapshot().visited, []);
+    assert.deepEqual(hub.snapshot().files, []);
+    hub.stop();
+  });
+
+  it("does not jump to a new session in project follow", () => {
+    const home = fs.mkdtempSync(path.join(os.tmpdir(), "plexus-project-stay-"));
+    const cwd = "/Users/me/proj";
+    const a = "01eeeeeeeeeeeeeeeeeeeeeeeeee";
+    const b = "01ffffffffffffffffffffffffff";
+    for (const id of [a, b]) {
+      const dir = path.join(home, "sessions", encodeCwd(cwd), id);
+      fs.mkdirSync(dir, { recursive: true });
+      fs.writeFileSync(path.join(dir, "summary.json"), JSON.stringify({ generated_title: id, agent_name: "grok-build" }));
+      fs.writeFileSync(path.join(dir, "updates.jsonl"), "");
+    }
+    fs.writeFileSync(
+      path.join(home, "active_sessions.json"),
+      JSON.stringify([{ session_id: a, pid: process.pid, cwd, opened_at: "2026-01-01T00:00:00Z" }]),
+    );
+    const hub = new SessionHub({ home, emit: () => {} });
+    hub.followMode = "project";
+    hub.refresh({ force: true });
+    assert.equal(hub.selectedId, a);
+    fs.writeFileSync(
+      path.join(home, "active_sessions.json"),
+      JSON.stringify([
+        { session_id: a, pid: process.pid, cwd, opened_at: "2026-01-01T00:00:00Z" },
+        { session_id: b, pid: process.pid, cwd, opened_at: "2026-01-01T00:03:00Z" },
+      ]),
+    );
+    hub.refresh();
+    assert.equal(hub.selectedId, a);
     hub.stop();
   });
 });

@@ -827,12 +827,20 @@ async function mountRoot(root, name) {
 
 let applying = Promise.resolve();
 function applySnapshot(data) {
-  const run = () => applySnapshotNow(data);
+  const gen = ++flags.snapshotGen;
+  const run = () => {
+    if (gen !== flags.snapshotGen) return;
+    return applySnapshotNow(data, gen);
+  };
   applying = applying.then(run, run);
   return applying;
 }
 
-async function applySnapshotNow(data) {
+function snapshotStale(gen: number) {
+  return gen !== flags.snapshotGen;
+}
+
+async function applySnapshotNow(data, gen) {
   try {
     window.clearTimeout(flags.demoTimer);
     state.mode = "live";
@@ -843,42 +851,49 @@ async function applySnapshotNow(data) {
       return;
     }
     const sessionId = data.sessionId || "";
+    const sameSession = Boolean(sessionId) && sessionId === state.sessionId;
     const sameRoot = Boolean(state.layout && state.rootPath === root);
     const laidCount = state.layout?.pos?.size || 0;
     const incomingVisits = (data.visited || []).filter((folder) => pathUnder(root, folder));
     const incomingFiles = (data.files || []).filter((file) => pathUnder(root, file));
-    const sparse = sameRoot && laidCount <= 1 && (incomingVisits.length > 0 || incomingFiles.length > 0);
-    const switchedView = !sameRoot || sparse;
-    state.sessionId = sessionId || state.sessionId;
-    if (!sameRoot) {
+    const sparse = sameSession && sameRoot && laidCount <= 1 && (incomingVisits.length > 0 || incomingFiles.length > 0);
+    const switchedView = !sameSession || !sameRoot || sparse;
+    fillSessionSelect(data.sessions, sessionId || state.sessionId);
+    if (snapshotStale(gen)) return;
+    if (!sameSession || !sameRoot) {
       state.agents = new Map();
       queues.clear();
       await mountRoot(root, data.name);
+      if (snapshotStale(gen)) return;
     }
     const visited = (data.visited || []).filter(inRoot);
     for (const folder of visited) {
+      if (snapshotStale(gen)) return;
       await ensurePath(folder);
       expandPath(folder);
       markTrail(folder);
     }
     const files = (data.files || []).filter(inRoot);
     for (const file of files) {
+      if (snapshotStale(gen)) return;
       await ensureFile(file);
       expandPath(file);
       markTrail(file);
     }
+    if (snapshotStale(gen)) return;
     const agents = data.agents || [];
     const liveIds = new Set(agents.map((item) => item.id));
     for (const id of [...state.agents.keys()]) {
       if (!liveIds.has(id)) dropAgent(id);
     }
     for (const item of agents) {
+      if (snapshotStale(gen)) return;
       const agent = ensureAgent(item.id, item.label || item.title);
       const dest = await ensureVisit(item.folderPath, item.filePath);
       expandPath(dest);
       if (!agent.traveling) agent.nodeId = dest;
     }
-    if (sameRoot && !sparse) {
+    if (sameSession && sameRoot && !sparse) {
       const added = appendMissingNodes();
       rememberTrailEdges(state.layout);
       if (added.length) drawTree(state.layout, { entering: new Set(added) });
@@ -889,7 +904,8 @@ async function applySnapshotNow(data) {
       await relayout({ tween: false, force: true });
       parkAgents();
     }
-    if (switchedView) await centerNewGraph({ tween: true });
+    if (snapshotStale(gen)) return;
+    if (switchedView) await centerNewGraph({ tween: false });
     fillSessionSelect(data.sessions, data.sessionId);
     setLive(
       data.busy ? "on" : agents.length ? "on" : "waiting",
@@ -1383,8 +1399,8 @@ function connectStream() {
       return;
     }
     if (data.type === "snapshot") {
-      if (data.sessions) fillSessionSelect(data.sessions, data.sessionId);
       if (state.mode === "live") applySnapshot(data);
+      else if (data.sessions) fillSessionSelect(data.sessions, data.sessionId);
       return;
     }
     if (data.type === "root") {
@@ -1403,6 +1419,7 @@ function connectStream() {
     }
     if (data.type === "visit") {
       if (state.mode !== "live") return;
+      if (state.sessionId && data.agentId && data.agentId !== state.sessionId) return;
       const loc = data.filePath || data.folderPath;
       if (!inRoot(loc) && data.cwd && data.cwd !== state.rootPath) return;
       setLive("on", "exploring");
