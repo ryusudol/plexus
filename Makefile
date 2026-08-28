@@ -1,5 +1,5 @@
 GO ?= go
-.PHONY: plexus test start quit toggle build-hud
+.PHONY: plexus test start quit toggle build-hud app
 
 plexus:
 	$(GO) build -o bin/plexus ./cmd/plexus
@@ -18,4 +18,7 @@ toggle:
 
 build-hud:
 	swift build -c release --package-path macos
+	$(GO) run ./cmd/plexus package-hud
+
+app:
 	$(GO) run ./cmd/plexus package-hud

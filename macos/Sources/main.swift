@@ -192,6 +192,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, WKNa
   private var restoringFrame = false
   private var chromeHover = false
   private var saveFrameTimer: Timer?
+  private var helperProcess: Process?
 
   init(url: URL, startHidden: Bool) {
     self.url = url
@@ -215,6 +216,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, WKNa
       }
     }
     writePid()
+    ensureBundledBackend()
     watchCommands()
     watchFocus()
     NSWorkspace.shared.notificationCenter.addObserver(
@@ -826,6 +828,68 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, WKNa
     try? pid.write(to: dir.appendingPathComponent("hud.pid"), atomically: true, encoding: .utf8)
   }
 
+  private func bundledHelperURL() -> URL? {
+    if let url = Bundle.main.url(forAuxiliaryExecutable: "plexus") { return url }
+    let url = Bundle.main.bundleURL.appendingPathComponent("Contents/MacOS/plexus")
+    return FileManager.default.isExecutableFile(atPath: url.path) ? url : nil
+  }
+
+  private func bundledResourceRoot() -> String? {
+    guard let root = Bundle.main.resourcePath else { return nil }
+    let index = (root as NSString).appendingPathComponent("public/index.html")
+    return FileManager.default.fileExists(atPath: index) ? root : nil
+  }
+
+  private func ensureBundledBackend() {
+    guard let helper = bundledHelperURL() else { return }
+    guard let health = URL(string: "http://127.0.0.1:7733/api/health") else { return }
+    var request = URLRequest(url: health)
+    request.timeoutInterval = 0.35
+    URLSession.shared.dataTask(with: request) { [weak self] data, _, _ in
+      var ok = false
+      if let data,
+         let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
+      {
+        ok = obj["ok"] as? Bool == true
+      }
+      if ok { return }
+      DispatchQueue.main.async { self?.startBundledHelper(helper) }
+    }.resume()
+  }
+
+  private func startBundledHelper(_ helper: URL) {
+    if helperProcess?.isRunning == true { return }
+    guard let root = bundledResourceRoot() else { return }
+    let proc = Process()
+    proc.executableURL = helper
+    proc.arguments = ["--server"]
+    var env = ProcessInfo.processInfo.environment
+    env["PLEXUS_ROOT"] = root
+    env["PORT"] = "7733"
+    proc.environment = env
+    proc.currentDirectoryURL = URL(fileURLWithPath: root)
+    proc.standardInput = FileHandle.nullDevice
+    proc.standardOutput = FileHandle.nullDevice
+    proc.standardError = FileHandle.nullDevice
+    do {
+      try proc.run()
+      helperProcess = proc
+    } catch {
+      NSLog("Plexus helper failed to start: \(error.localizedDescription)")
+    }
+  }
+
+  private func stopBundledBackend() {
+    helperProcess?.terminate()
+    helperProcess = nil
+    let pidFile = plexusDir().appendingPathComponent("backend.pid")
+    guard let raw = try? String(contentsOf: pidFile, encoding: .utf8),
+          let pid = Int32(raw.trimmingCharacters(in: .whitespacesAndNewlines)),
+          pid > 1
+    else { return }
+    kill(pid, SIGTERM)
+  }
+
   private func watchCommands() {
     commandTimer = Timer.scheduledTimer(withTimeInterval: 0.25, repeats: true) { [weak self] _ in
       self?.drainCommand()
@@ -1037,6 +1101,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, WKNa
   @objc func quit() {
     savePanelFrame()
     NSApp.terminate(nil)
+  }
+
+  func applicationWillTerminate(_ notification: Notification) {
+    stopBundledBackend()
+  }
+
+  func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
+    showPanel()
+    return true
   }
 }
 

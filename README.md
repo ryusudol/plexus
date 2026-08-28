@@ -8,17 +8,30 @@ Grok sessions come from `~/.grok/active_sessions.json` (including CLI sessions i
 
 The panel appears only while the related agent session is the focused Mac app (Orca / Grok Build, Claude Code, Codex, or the terminal hosting that process) — switch to Mail or Safari and it tucks away. While an agent is focused, the panel is the default; Esc collapses it to the orb. The map is a neural arbor: no boxes, pink names on visited folders (customizable), organic branches, camera fitted to the whole trail. Click the second circle in the header to set an agent face (your character); Shift-click resets it.
 
-## Run
+## Standalone app
 
-Requires [Go](https://go.dev/dl/) 1.23+ and macOS 13+.
+Requires [Go](https://go.dev/dl/) 1.23+, a Swift toolchain (Xcode or the Command Line Tools), and macOS 13+.
 
 ```sh
 cd projects/plexus
-go run ./cmd/plexus package-hud   # after: swift build -c release --package-path macos
+make app
+open macos/dist/Plexus.app
+```
+
+That builds `macos/dist/Plexus.app` with the HUD, Go helper, and web assets inside the bundle. Double-click it (or copy it to `/Applications`) — it starts the helper itself and does not need the repo after that.
+
+Unsigned builds may be blocked by Gatekeeper: right-click the app → Open. Signing and notarizing are not part of this packaging step.
+
+Claude Code / Codex / Grok hooks are installed on first launch and call `~/.plexus/bin/plexus`, a small wrapper that points at the bundled helper.
+
+## Run from the repo
+
+```sh
+go run ./cmd/plexus package-hud
 go run ./cmd/plexus
 ```
 
-Or `make start` after `make build-hud`. That starts a menu-bar extra (no Dock icon). The floating panel appears when an agent session is focused.
+Or `make start` after `make app`. That starts a menu-bar extra (no Dock icon). The floating panel appears when an agent session is focused.
 
 | | |
 |---|---|

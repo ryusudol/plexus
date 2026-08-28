@@ -48,7 +48,7 @@ func main() {
 		runServer()
 		return
 	}
-	if cmd == "package-hud" {
+	if cmd == "package-hud" || cmd == "package" {
 		if err := packageHUD(); err != nil {
 			fmt.Fprintln(os.Stderr, err)
 			os.Exit(1)
@@ -129,10 +129,28 @@ func runHook(source string) {
 	fmt.Println(`{"ok":true,"decision":"allow"}`)
 }
 
-func installSelf(root string) string {
+func resolvedExe() string {
 	exe, err := os.Executable()
 	if err != nil {
 		return ""
+	}
+	if resolved, err := filepath.EvalSymlinks(exe); err == nil {
+		return resolved
+	}
+	return exe
+}
+
+func installSelf(root string) string {
+	exe := resolvedExe()
+	if exe == "" {
+		return ""
+	}
+	if _, resources, ok := paths.DetectAppBundle(exe); ok {
+		dest := filepath.Join(paths.PlexusDir(), "bin", "plexus")
+		if err := writeAppWrapper(dest, exe, resources); err != nil {
+			return exe
+		}
+		return dest
 	}
 	dest := filepath.Join(root, "bin", "plexus")
 	if same, _ := sameFile(exe, dest); same {
@@ -154,6 +172,18 @@ func installSelf(root string) string {
 		return exe
 	}
 	return dest
+}
+
+func shQuote(s string) string {
+	return `'` + strings.ReplaceAll(s, `'`, `'"'"'`) + `'`
+}
+
+func writeAppWrapper(dest, helper, root string) error {
+	if err := os.MkdirAll(filepath.Dir(dest), 0o755); err != nil {
+		return err
+	}
+	body := "#!/bin/sh\nexport PLEXUS_ROOT=" + shQuote(root) + "\nexec " + shQuote(helper) + " \"$@\"\n"
+	return os.WriteFile(dest, []byte(body), 0o755)
 }
 
 func sameFile(a, b string) (bool, error) {
@@ -256,6 +286,9 @@ func ensureHUD(hide, demo bool) {
 	}
 	root := paths.RepoRoot()
 	hudApp := filepath.Join(root, "macos", "dist", "Plexus.app")
+	if app, _, ok := paths.DetectAppBundle(resolvedExe()); ok {
+		hudApp = app
+	}
 	hudBin := filepath.Join(root, "macos", ".build", "release", "PlexusHUD")
 	appExists := false
 	if _, err := os.Stat(filepath.Join(hudApp, "Contents", "MacOS", "PlexusHUD")); err == nil {
@@ -316,54 +349,105 @@ func quitAll() {
 	_ = os.Remove(filepath.Join(paths.PlexusDir(), "hud-cmd"))
 }
 
+func lookCmd(name string) string {
+	if p, err := exec.LookPath(name); err == nil {
+		return p
+	}
+	for _, dir := range []string{"/opt/homebrew/bin", "/usr/bin", "/usr/local/bin"} {
+		cand := filepath.Join(dir, name)
+		if _, err := os.Stat(cand); err == nil {
+			return cand
+		}
+	}
+	return name
+}
+
+func copyFile(src, dst string, mode os.FileMode) error {
+	if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
+		return err
+	}
+	in, err := os.Open(src)
+	if err != nil {
+		return err
+	}
+	defer in.Close()
+	out, err := os.OpenFile(dst, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, mode)
+	if err != nil {
+		return err
+	}
+	defer out.Close()
+	if _, err := io.Copy(out, in); err != nil {
+		return err
+	}
+	return os.Chmod(dst, mode)
+}
+
+func copyTree(src, dst string) error {
+	return filepath.Walk(src, func(path string, info os.FileInfo, err error) error {
+		if err != nil {
+			return err
+		}
+		name := info.Name()
+		if name == ".DS_Store" || name == "node_modules" || name == ".git" {
+			if info.IsDir() {
+				return filepath.SkipDir
+			}
+			return nil
+		}
+		rel, err := filepath.Rel(src, path)
+		if err != nil {
+			return err
+		}
+		target := filepath.Join(dst, rel)
+		if info.IsDir() {
+			return os.MkdirAll(target, 0o755)
+		}
+		return copyFile(path, target, 0o644)
+	})
+}
+
 func packageHUD() error {
 	root := paths.RepoRoot()
 	app := filepath.Join(root, "macos", "dist", "Plexus.app")
 	contents := filepath.Join(app, "Contents")
 	macOS := filepath.Join(contents, "MacOS")
-	binary := filepath.Join(root, "macos", ".build", "release", "PlexusHUD")
-	if _, err := os.Stat(binary); err != nil {
-		return fmt.Errorf("Missing HUD binary. Run swift build first.")
-	}
+	resources := filepath.Join(contents, "Resources")
 	if err := os.MkdirAll(macOS, 0o755); err != nil {
 		return err
 	}
-	in, err := os.Open(binary)
-	if err != nil {
+	if err := os.MkdirAll(resources, 0o755); err != nil {
 		return err
 	}
-	defer in.Close()
-	dest := filepath.Join(macOS, "PlexusHUD")
-	out, err := os.OpenFile(dest, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o755)
-	if err != nil {
+
+	swift := exec.Command(lookCmd("swift"), "build", "-c", "release", "--package-path", filepath.Join(root, "macos"))
+	swift.Dir = root
+	if out, err := swift.CombinedOutput(); err != nil {
+		return fmt.Errorf("swift build: %w\n%s", err, out)
+	}
+	hudBin := filepath.Join(root, "macos", ".build", "release", "PlexusHUD")
+	if err := copyFile(hudBin, filepath.Join(macOS, "PlexusHUD"), 0o755); err != nil {
 		return err
 	}
-	if _, err := io.Copy(out, in); err != nil {
-		out.Close()
+
+	helper := filepath.Join(macOS, "plexus")
+	gobuild := exec.Command(lookCmd("go"), "build", "-o", helper, "./cmd/plexus")
+	gobuild.Dir = root
+	gobuild.Env = append(os.Environ(), "CGO_ENABLED=0")
+	if out, err := gobuild.CombinedOutput(); err != nil {
+		return fmt.Errorf("go build helper: %w\n%s", err, out)
+	}
+
+	if err := copyFile(filepath.Join(root, "macos", "Info.plist"), filepath.Join(contents, "Info.plist"), 0o644); err != nil {
 		return err
 	}
-	out.Close()
-	plistSrc := filepath.Join(root, "macos", "Info.plist")
-	plistDst := filepath.Join(contents, "Info.plist")
-	b, err := os.ReadFile(plistSrc)
-	if err != nil {
+	if err := copyTree(filepath.Join(root, "macos", "Resources"), resources); err != nil {
 		return err
 	}
-	if err := os.WriteFile(plistDst, b, 0o644); err != nil {
+	if err := copyTree(filepath.Join(root, "public"), filepath.Join(resources, "public")); err != nil {
 		return err
 	}
-	resSrc := filepath.Join(root, "macos", "Resources")
-	resDst := filepath.Join(contents, "Resources")
-	_ = os.MkdirAll(resDst, 0o755)
-	entries, _ := os.ReadDir(resSrc)
-	for _, e := range entries {
-		src := filepath.Join(resSrc, e.Name())
-		dst := filepath.Join(resDst, e.Name())
-		data, err := os.ReadFile(src)
-		if err != nil {
-			continue
-		}
-		_ = os.WriteFile(dst, data, 0o644)
+	if err := copyTree(filepath.Join(root, "lib"), filepath.Join(resources, "lib")); err != nil {
+		return err
 	}
 	fmt.Println(app)
 	return nil
