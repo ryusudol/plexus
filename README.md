@@ -10,23 +10,27 @@ The panel appears only while the related agent session is the focused Mac app (O
 
 ## Run
 
+Requires [Go](https://go.dev/dl/) 1.23+ and macOS 13+.
+
 ```sh
 cd projects/plexus
-npm run build:hud
-npm start
+go run ./cmd/plexus package-hud   # after: swift build -c release --package-path macos
+go run ./cmd/plexus
 ```
 
-That starts a menu-bar extra (no Dock icon). The floating panel appears when that session is focused.
+Or `make start` after `make build-hud`. That starts a menu-bar extra (no Dock icon). The floating panel appears when an agent session is focused.
 
 | | |
 |---|---|
 | Menu bar → Show Window | Open the HUD |
 | Esc | Hide |
-| `node bin/plexus.ts toggle` | Show / hide |
-| `node bin/plexus.ts quit` | Stop HUD + backend |
+| `go run ./cmd/plexus toggle` | Show / hide |
+| `go run ./cmd/plexus quit` | Stop HUD + backend |
 | Menu bar → Walk Demo | Fake wide repo, no agent required |
 
-`SessionStart` runs `bin/plexus.ts --ensure` so the HUD process is ready, still hidden, until that session actually starts working. Requires Node 22.6+ (type stripping).
+`SessionStart` runs `bin/plexus --ensure` so the HUD process is ready, still hidden, until that session actually starts working.
+
+The graph UI is TypeScript in a WKWebView. The backend is a Go process on `127.0.0.1:7733`.
 
 ## Notes
 
