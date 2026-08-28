@@ -4,14 +4,23 @@
   "private": true,
   "type": "module",
   "description": "macOS HUD that shows coding agents walking a repo in real time",
+  "engines": {
+    "node": ">=22.6.0"
+  },
   "bin": {
-    "plexus": "./bin/plexus.js"
+    "plexus": "./bin/plexus.ts"
   },
   "scripts": {
-    "start": "node bin/plexus.js",
-    "hud": "node bin/plexus.js",
-    "build:hud": "swift build -c release --package-path macos && node bin/package-hud.js",
-    "quit": "node bin/plexus.js quit",
-    "test": "node --test tests/extract.test.js tests/sessions.test.js"
+    "start": "node bin/plexus.ts",
+    "hud": "node bin/plexus.ts",
+    "build:hud": "swift build -c release --package-path macos && node bin/package-hud.ts",
+    "quit": "node bin/plexus.ts quit",
+    "test": "node --test tests/extract.test.ts tests/sessions.test.ts",
+    "typecheck": "tsc --noEmit && tsc --noEmit -p tsconfig.web.json"
+  },
+  "devDependencies": {
+    "@types/node": "^24.3.0",
+    "typescript": "^5.9.2"
   }
 }
+

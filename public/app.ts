@@ -1,4 +1,4 @@
-import { segmentsFrom } from "/lib/extract.js";
+import { parentFolder, segmentsFrom } from "../lib/extract.ts";
 import {
   attachChild,
   cameraPanToInclude,
@@ -7,86 +7,71 @@ import {
   fitCameraToBounds,
   hopsBetween,
   layoutTrail,
-} from "/lib/layout.js";
-import { buildShowcaseTree, showcaseWalk } from "/lib/demo-tree.js";
+  type Camera,
+  type GraphLayout,
+  type NodePos,
+} from "../lib/layout.ts";
+import { buildShowcaseTree, showcaseWalk } from "../lib/demo-tree.ts";
+import {
+  DEFAULT_ACCENT,
+  INK,
+  PALETTE,
+  SHAPES,
+  WHITE,
+  cssEscape,
+  easeInOut,
+  edgeKey,
+  folderTail,
+  nearestPalette,
+  sessionLabel,
+  shortLabel,
+  svgEl as el,
+  svgNS,
+  whisperName,
+  type AgentMark,
+  type AppState,
+  type SessionListItem,
+} from "./hud.ts";
 
-const svgNS = "http://www.w3.org/2000/svg";
 const reduceMotion = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
-const DEFAULT_ACCENT = "#ff4fcb";
-const PALETTE = [
-  { id: "pink", hex: "#ff4fcb" },
-  { id: "red", hex: "#ff4d4d" },
-  { id: "orange", hex: "#ff8a3a" },
-  { id: "yellow", hex: "#f5d76e" },
-  { id: "green", hex: "#3ddc97" },
-  { id: "blue", hex: "#4d9fff" },
-  { id: "purple", hex: "#b57bff" },
-  { id: "white", hex: "#f4f4f6" },
-];
-const SHAPES = [
-  { id: "tree", label: "Tree" },
-  { id: "circle", label: "Circle" },
-];
-
-function nearestPalette(hex) {
-  const want = String(hex || "").toLowerCase();
-  const exact = PALETTE.find((c) => c.hex === want);
-  if (exact) return exact.hex;
-  const toRgb = (h) => [
-    parseInt(h.slice(1, 3), 16),
-    parseInt(h.slice(3, 5), 16),
-    parseInt(h.slice(5, 7), 16),
-  ];
-  let best = DEFAULT_ACCENT;
-  let bestDist = Infinity;
-  const [r, g, b] = /^#[0-9a-f]{6}$/.test(want) ? toRgb(want) : [255, 79, 203];
-  for (const color of PALETTE) {
-    const [cr, cg, cb] = toRgb(color.hex);
-    const dist = (r - cr) ** 2 + (g - cg) ** 2 + (b - cb) ** 2;
-    if (dist < bestDist) {
-      bestDist = dist;
-      best = color.hex;
-    }
-  }
-  return best;
-}
 
 const els = {
-  svg: document.getElementById("map"),
-  session: document.getElementById("session"),
-  demo: document.getElementById("btn-demo"),
+  svg: document.querySelector("#map") as SVGSVGElement | null,
+  session: document.getElementById("session") as HTMLSelectElement | null,
+  demo: document.getElementById("btn-demo") as HTMLElement | null,
   liveStatus: document.getElementById("live"),
   peek: document.getElementById("peek"),
-  menu: document.getElementById("overflow-menu"),
-  stage: document.getElementById("stage"),
+  menu: document.getElementById("overflow-menu") as HTMLElement | null,
+  stage: document.getElementById("stage") as HTMLElement | null,
   palette: document.getElementById("palette"),
   colorPick: document.getElementById("color-pick"),
-  colorCurrent: document.getElementById("color-current"),
-  opacity: document.getElementById("opacity"),
+  colorCurrent: document.getElementById("color-current") as HTMLElement | null,
+  opacity: document.getElementById("opacity") as HTMLInputElement | null,
   opacityOut: document.getElementById("opacity-out"),
   themeSeg: document.getElementById("theme-seg"),
-  shape: document.getElementById("shape"),
-  center: document.getElementById("btn-center"),
+  shape: document.getElementById("shape") as HTMLElement | null,
+  center: document.getElementById("btn-center") as HTMLElement | null,
   face: document.getElementById("agent-face"),
-  faceWrap: document.getElementById("agent-face-wrap"),
-  faceBtn: document.getElementById("agent-face-btn"),
-  faceMenu: document.getElementById("face-menu"),
-  settings: document.getElementById("settings"),
-  settingsBtn: document.getElementById("btn-settings"),
-  settingsTray: document.getElementById("settings-tray"),
-  settingsPicker: document.getElementById("settings-picker"),
-  instrument: document.querySelector(".instrument"),
+  faceWrap: document.getElementById("agent-face-wrap") as HTMLElement | null,
+  faceBtn: document.getElementById("agent-face-btn") as HTMLElement | null,
+  faceMenu: document.getElementById("face-menu") as HTMLElement | null,
+  settings: document.getElementById("settings") as HTMLElement | null,
+  settingsBtn: document.getElementById("btn-settings") as HTMLButtonElement | null,
+  settingsTray: document.getElementById("settings-tray") as HTMLElement | null,
+  settingsPicker: document.getElementById("settings-picker") as HTMLElement | null,
+  instrument: document.querySelector(".instrument") as HTMLElement | null,
   followSeg: document.getElementById("follow-seg"),
-  sessionPicker: document.getElementById("session-picker"),
-  sessionSearch: document.getElementById("session-search"),
-  sessionList: document.getElementById("session-list"),
-  pickerScrim: document.getElementById("picker-scrim"),
+  sessionPicker: document.getElementById("session-picker") as HTMLElement | null,
+  sessionSearch: document.getElementById("session-search") as HTMLInputElement | null,
+  sessionList: document.getElementById("session-list") as HTMLElement | null,
+  pickerScrim: document.getElementById("picker-scrim") as HTMLElement | null,
+  log: document.getElementById("log"),
 };
 
-const camera = { x: 0, y: 0, k: 1 };
+const camera: Camera = { x: 0, y: 0, k: 1 };
 let userMovedCamera = false;
 let pendingCenter = false;
-const state = {
+const state: AppState = {
   mode: "live",
   rootId: "",
   rootPath: "",
@@ -113,19 +98,9 @@ const state = {
   sessions: [],
 };
 
-const queues = new Map();
+const queues = new Map<string, Promise<unknown>>();
 let seq = 0;
 let demoTimer = 0;
-
-function el(name, attrs = {}, parent) {
-  const node = document.createElementNS(svgNS, name);
-  for (const [key, value] of Object.entries(attrs)) {
-    if (value == null) continue;
-    node.setAttribute(key, String(value));
-  }
-  if (parent) parent.appendChild(node);
-  return node;
-}
 
 const defs = el("defs", {}, els.svg);
 const cameraG = el("g", { id: "camera" }, els.svg);
@@ -133,7 +108,7 @@ const edgeG = el("g", { id: "edges" }, cameraG);
 const nodeG = el("g", { id: "nodes" }, cameraG);
 const moreG = el("g", { id: "more" }, cameraG);
 const agentG = el("g", { id: "agents" }, cameraG);
-const graphEls = { nodes: new Map(), edges: new Map() };
+const graphEls = { nodes: new Map<string, SVGElement>(), edges: new Map<string, SVGElement>() };
 let camGen = 0;
 let morphGen = 0;
 let trailEpoch = 0;
@@ -291,7 +266,7 @@ function setAgentSymbol(dataUrl) {
     }
   }
   const reset = els.faceMenu?.querySelector('[data-face="reset"]');
-  if (reset) reset.hidden = !state.agentSymbol;
+  if (reset instanceof HTMLElement) reset.hidden = !state.agentSymbol;
   for (const agent of state.agents.values()) drawAgent(agent);
 }
 
@@ -376,9 +351,6 @@ function resolvedTheme() {
   return state.theme === "light" ? "light" : "dark";
 }
 
-const WHITE = "#f4f4f6";
-const INK = "#16161a";
-
 function accentForTheme(hex = state.accent) {
   if (String(hex).toLowerCase() === WHITE && resolvedTheme() === "light") return INK;
   return hex;
@@ -417,7 +389,7 @@ function applyOpacity(value, { persist = false } = {}) {
 function paintFollow() {
   const root = els.followSeg || document.getElementById("follow-seg");
   if (!root) return;
-  for (const btn of root.querySelectorAll("button[data-follow]")) {
+  for (const btn of root.querySelectorAll<HTMLButtonElement>("button[data-follow]")) {
     const on = btn.dataset.follow === state.graphFollow;
     btn.classList.toggle("on", on);
     btn.setAttribute("aria-selected", on ? "true" : "false");
@@ -558,7 +530,7 @@ function bindCenterBtn() {
   let btn = document.getElementById("btn-center") || els.center;
   if (!btn) {
     btn = document.createElement("button");
-    btn.type = "button";
+    btn.setAttribute("type", "button");
     btn.id = "btn-center";
     btn.title = "Center graph";
     btn.setAttribute("aria-label", "Center graph");
@@ -600,7 +572,7 @@ function ensureShapeEl() {
 function paintTheme() {
   const root = els.themeSeg || document.getElementById("theme-seg");
   if (!root) return;
-  for (const btn of root.querySelectorAll("button")) {
+  for (const btn of root.querySelectorAll<HTMLButtonElement>("button")) {
     const on = btn.dataset.theme === state.theme;
     btn.classList.toggle("on", on);
     btn.setAttribute("aria-selected", on ? "true" : "false");
@@ -722,12 +694,6 @@ function colorFor(id) {
   const idx = Math.max(0, ids.indexOf(id));
   if (idx <= 0) return state.accent;
   return idx === 1 ? "#f7f7f8" : "#d4a5c9";
-}
-
-function whisperName(name) {
-  const raw = String(name || "").replace(/[_-]+/g, " ").trim();
-  if (raw.length <= 16) return raw;
-  return raw.slice(0, 15);
 }
 
 function ancestorsOf(id) {
@@ -895,7 +861,15 @@ function graphOverflowsView(laid = state.layout) {
   return false;
 }
 
-async function keepGraphFramed({ tween = true, extraIds = [], agent = null } = {}) {
+async function keepGraphFramed({
+  tween = true,
+  extraIds = [] as string[],
+  agent = null,
+}: {
+  tween?: boolean;
+  extraIds?: string[];
+  agent?: AgentMark | null;
+} = {}) {
   if (!state.layout) return;
   const fit = cameraTarget(state.layout);
   const zoomedIn = userMovedCamera && camera.k > (fit.k || 1) + 0.05;
@@ -943,9 +917,9 @@ function tweenCamera(to, ms) {
     return Promise.resolve();
   }
   const from = { x: camera.x, y: camera.y, k: camera.k };
-  return new Promise((resolve) => {
+  return new Promise<void>((resolve) => {
     const t0 = performance.now();
-    const frame = (now) => {
+    const frame = (now: number) => {
       if (gen !== camGen) {
         resolve();
         return;
@@ -961,10 +935,6 @@ function tweenCamera(to, ms) {
     };
     requestAnimationFrame(frame);
   });
-}
-
-function easeInOut(t) {
-  return t < 0.5 ? 4 * t * t * t : 1 - (-2 * t + 2) ** 3 / 2;
 }
 
 function preserveCameraOnResize() {
@@ -1005,17 +975,22 @@ function onStageResize() {
   preserveCameraOnResize();
 }
 
-function interpolateLayout(fromPos, laid, ms, { parkTraveling = false } = {}) {
-  const park = (pos) => parkAgents(pos, { includeTraveling: parkTraveling });
+function interpolateLayout(
+  fromPos: Map<string, NodePos> | null | undefined,
+  laid: GraphLayout,
+  ms: number,
+  { parkTraveling = false }: { parkTraveling?: boolean } = {},
+) {
+  const park = (pos?: Map<string, NodePos> | null) => parkAgents(pos, { includeTraveling: parkTraveling });
   const gen = ++morphGen;
   if (reduceMotion || !fromPos || ms <= 0) {
     drawTree(laid);
     park();
     return Promise.resolve();
   }
-  return new Promise((resolve) => {
+  return new Promise<void>((resolve) => {
     const t0 = performance.now();
-    const frame = (now) => {
+    const frame = (now: number) => {
       if (gen !== morphGen) {
         resolve();
         return;
@@ -1045,10 +1020,6 @@ function interpolateLayout(fromPos, laid, ms, { parkTraveling = false } = {}) {
     };
     requestAnimationFrame(frame);
   });
-}
-
-function edgeKey(from, to) {
-  return `${from}->${to}`;
 }
 
 function edgeVisited(from, to) {
@@ -1096,22 +1067,35 @@ function paintEdge(g, from, to, a, b) {
 function paintNodeLooks(g, id, p) {
   const node = state.nodes.get(id);
   if (!g || !node) return;
+  const file = node.kind === "file";
   const visited = state.visited.has(id);
   const here = isNeighborhood(id);
   const live = liveNodeIds().has(id);
   const root = id === state.rootId;
   const glow = g.querySelector(".poke-glow");
   const dot = g.querySelector(".dot");
+  const mark = g.querySelector(".file-mark");
   const label = g.querySelector(".node-label");
   const title = g.querySelector("title");
+  g.classList.toggle("file", file);
+  g.classList.toggle("folder", !file);
+  g.setAttribute("data-kind", file ? "file" : "folder");
   if (glow) {
     glow.setAttribute("fill", state.accent);
     glow.setAttribute("opacity", live ? "0.14" : "0");
   }
+  const fill = live ? "#fff" : visited || root ? state.accent : "#5c5c66";
+  const opacity = live || visited || here || root ? "1" : "0.35";
   if (dot) {
+    dot.style.display = file ? "none" : "";
     dot.setAttribute("r", live ? "5.2" : root ? "4.4" : visited ? "3.1" : "2.2");
-    dot.setAttribute("fill", live ? "#fff" : visited || root ? state.accent : "#5c5c66");
-    dot.setAttribute("opacity", live || visited || here || root ? "1" : "0.35");
+    dot.setAttribute("fill", fill);
+    dot.setAttribute("opacity", opacity);
+  }
+  if (mark) {
+    mark.style.display = file ? "" : "none";
+    mark.setAttribute("fill", fill);
+    mark.setAttribute("opacity", opacity);
   }
   if (label) {
     if (live) {
@@ -1124,7 +1108,7 @@ function paintNodeLooks(g, id, p) {
       label.setAttribute("text-anchor", outward > 0 ? "start" : "end");
       label.setAttribute("fill", visited ? state.accent : "#8b8b93");
       label.setAttribute("opacity", visited || here || root ? "1" : "0.38");
-      label.setAttribute("font-size", root ? "11" : "10");
+      label.setAttribute("font-size", root ? "11" : file ? "9.5" : "10");
       label.textContent = whisperName(node.name);
     }
   }
@@ -1147,7 +1131,7 @@ function markEdgeVisited(from, to) {
   paintEdge(g, from, to, a, b);
 }
 
-function drawTree(laid, opts = {}) {
+function drawTree(laid: GraphLayout | null | undefined, opts: { posOverride?: Map<string, NodePos>; entering?: Set<string> } = {}) {
   if (!laid) return;
   const pos = opts.posOverride || laid.pos;
   const entering = opts.entering || new Set();
@@ -1185,16 +1169,19 @@ function drawTree(laid, opts = {}) {
 
   const liveNodes = new Set();
   for (const [id, p] of pos) {
-    if (!state.nodes.get(id)) continue;
+    const node = state.nodes.get(id);
+    if (!node) continue;
     liveNodes.add(id);
     let g = graphEls.nodes.get(id);
     if (!g) {
       g = el("g", {
-        class: "folder" + (entering.has(id) ? " born" : ""),
+        class: (node.kind === "file" ? "file" : "folder") + (entering.has(id) ? " born" : ""),
         "data-id": id,
+        "data-kind": node.kind === "file" ? "file" : "folder",
       }, nodeG);
       el("circle", { class: "poke-glow", r: "26" }, g);
       el("circle", { class: "dot", r: "2.2" }, g);
+      el("rect", { class: "file-mark", x: "-2.1", y: "-2.1", width: "4.2", height: "4.2", rx: "0.7" }, g);
       el("text", { class: "node-label" }, g);
       g.appendChild(document.createElementNS(svgNS, "title"));
       g.addEventListener("pointerdown", (ev) => ev.stopPropagation());
@@ -1241,7 +1228,7 @@ function liveNodeIds() {
   return ids;
 }
 
-function parkAgents(posMap, { includeTraveling = false } = {}) {
+function parkAgents(posMap?: Map<string, NodePos> | null, { includeTraveling = false }: { includeTraveling?: boolean } = {}) {
   const pos = posMap || state.layout?.pos;
   if (!pos) return;
   const occupancy = new Map();
@@ -1289,14 +1276,14 @@ function drawAgent(agent) {
   g.querySelector(".halo.h1").setAttribute("stroke", accent);
   g.querySelector(".halo.h2").setAttribute("stroke", ink);
   g.querySelector(".ring").setAttribute("stroke", accent);
-  const core = g.querySelector(".core");
-  const face = g.querySelector(".face");
-  if (state.agentSymbol) {
+  const core = g.querySelector(".core") as SVGElement | null;
+  const face = g.querySelector(".face") as SVGElement | null;
+  if (state.agentSymbol && face && core) {
     face.setAttribute("href", state.agentSymbol);
     face.setAttributeNS("http://www.w3.org/1999/xlink", "href", state.agentSymbol);
     face.style.display = "";
     core.style.display = "none";
-  } else {
+  } else if (face && core) {
     face.style.display = "none";
     core.style.display = "";
     core.setAttribute("fill", ink);
@@ -1307,11 +1294,6 @@ function drawAgent(agent) {
   tag.textContent = folder
     ? `${whisperName(folder)}`
     : agent.label || "agent";
-}
-
-function cssEscape(value) {
-  if (window.CSS && CSS.escape) return CSS.escape(value);
-  return String(value).replace(/"/g, '\\"');
 }
 
 function setLive(kind, text) {
@@ -1338,7 +1320,7 @@ function setPeek(text) {
   els.peek.textContent = text || "";
 }
 
-function peekHere(folderPath, filePath) {
+function peekHere(folderPath: string | null | undefined, filePath?: string | null) {
   const loc = filePath || folderPath || "";
   const name = loc.split("/").filter(Boolean).pop() || "";
   setPeek(name ? `now  ${name}` : loc);
@@ -1369,27 +1351,10 @@ function resetTree({ rootId, rootPath, name, nodes, parentOf }) {
   }
 }
 
-function shortLabel(label, id) {
-  if (label && !/^01[a-f0-9-]{20,}$/i.test(label) && label !== "main") return label;
-  if (!id) return "agent";
-  return id.length > 10 ? id.slice(0, 4) : id;
-}
-
-function sessionLabel(item) {
-  const title = String(item.title || "").trim();
-  if (title && !/^01[a-f0-9-]{20,}$/i.test(title) && title !== "main") return title;
-  return String(item.cwd || "").trim() || "project";
-}
-
 function setSessionTitle(text) {
   const label = String(text || "").trim() || "Plexus";
   document.title = label;
   notifyHost({ type: "title", value: label });
-}
-
-function folderTail(path) {
-  const parts = String(path || "").split("/").filter(Boolean);
-  return parts[parts.length - 1] || path || "";
 }
 
 function fillSessionSelect(sessions, selectedId) {
@@ -1505,6 +1470,7 @@ async function mountRoot(root, name) {
     childIds: [],
     hasChildren: true,
     childrenLoaded: false,
+    kind: "folder",
   });
   parentOf.set(root, null);
   resetTree({
@@ -1539,7 +1505,8 @@ async function applySnapshotNow(data) {
     const sameRoot = Boolean(state.layout && state.rootPath === root);
     const laidCount = state.layout?.pos?.size || 0;
     const incomingVisits = (data.visited || []).filter((folder) => folder === root || String(folder).startsWith(`${root}/`));
-    const sparse = sameRoot && laidCount <= 1 && incomingVisits.length > 0;
+    const incomingFiles = (data.files || []).filter((file) => file === root || String(file).startsWith(`${root}/`));
+    const sparse = sameRoot && laidCount <= 1 && (incomingVisits.length > 0 || incomingFiles.length > 0);
     const switchedView = !sameRoot || sparse;
     state.sessionId = sessionId || state.sessionId;
     if (!sameRoot) {
@@ -1551,10 +1518,13 @@ async function applySnapshotNow(data) {
     for (const folder of visited) {
       await ensurePath(folder);
       expandPath(folder);
-      state.visited.set(folder, 1);
-      for (const anc of ancestorsOf(folder)) {
-        if (!state.visited.has(anc)) state.visited.set(anc, 1);
-      }
+      markTrail(folder);
+    }
+    const files = (data.files || []).filter(inRoot);
+    for (const file of files) {
+      await ensureFile(file);
+      expandPath(file);
+      markTrail(file);
     }
     const agents = data.agents || [];
     const liveIds = new Set(agents.map((item) => item.id));
@@ -1563,8 +1533,7 @@ async function applySnapshotNow(data) {
     }
     for (const item of agents) {
       const agent = ensureAgent(item.id, item.label || item.title);
-      const dest = inRoot(item.folderPath) ? item.folderPath : root;
-      await ensurePath(dest);
+      const dest = await ensureVisit(item.folderPath, item.filePath);
       expandPath(dest);
       if (!agent.traveling) agent.nodeId = dest;
     }
@@ -1585,10 +1554,11 @@ async function applySnapshotNow(data) {
       data.busy ? "on" : agents.length ? "on" : "waiting",
       data.busy ? "exploring" : agents.length ? "attached" : "waiting",
     );
-    const last = visited[visited.length - 1];
-    if (last) peekHere(last);
+    const lastFile = files[files.length - 1];
+    const last = lastFile || visited[visited.length - 1];
+    if (last) peekHere(lastFile ? parentFolder(lastFile) : last, lastFile || null);
   } catch (err) {
-    setPeek(String(err && err.message ? err.message : err));
+    setPeek(String(err instanceof Error ? err.message : err));
   }
 }
 
@@ -1627,9 +1597,30 @@ function dropAgent(id) {
   if (node) node.remove();
 }
 
+function attachChildNode(parentId, childId) {
+  const parent = state.nodes.get(parentId);
+  if (parent && !parent.childIds.includes(childId)) parent.childIds.push(childId);
+  if (parent) parent.hasChildren = true;
+  state.parentOf.set(childId, parentId);
+}
+
+function markTrail(nodeId, bump = false) {
+  if (!nodeId) return;
+  if (bump) state.visited.set(nodeId, (state.visited.get(nodeId) || 0) + 1);
+  else if (!state.visited.has(nodeId)) state.visited.set(nodeId, 1);
+  for (const anc of ancestorsOf(nodeId)) {
+    if (!state.visited.has(anc)) state.visited.set(anc, 1);
+  }
+}
+
 async function loadChildren(dirPath) {
   if (state.mode === "demo") return;
   const node = state.nodes.get(dirPath);
+  if (node?.kind === "file") {
+    node.childrenLoaded = true;
+    node.hasChildren = false;
+    return;
+  }
   if (node?.childrenLoaded) return;
   const res = await fetch(`/api/children?path=${encodeURIComponent(dirPath)}`);
   if (!res.ok) return;
@@ -1643,12 +1634,18 @@ async function loadChildren(dirPath) {
       childIds: [],
       hasChildren: data.children.length > 0,
       childrenLoaded: true,
+      kind: "folder",
     });
   }
   const parent = state.nodes.get(dirPath);
-  parent.childIds = data.children.map((c) => c.path);
-  parent.hasChildren = data.children.length > 0;
+  const folderIds = data.children.map((c) => c.path);
+  const keepFiles = (parent.childIds || []).filter(
+    (id) => state.nodes.get(id)?.kind === "file" && !folderIds.includes(id),
+  );
+  parent.childIds = [...folderIds, ...keepFiles];
+  parent.hasChildren = parent.childIds.length > 0;
   parent.childrenLoaded = true;
+  parent.kind = parent.kind || "folder";
   for (const child of data.children) {
     if (!state.nodes.has(child.path)) {
       state.nodes.set(child.path, {
@@ -1659,6 +1656,7 @@ async function loadChildren(dirPath) {
         childIds: [],
         hasChildren: child.hasChildren,
         childrenLoaded: false,
+        kind: "folder",
       });
     }
     state.parentOf.set(child.path, dirPath);
@@ -1681,7 +1679,9 @@ async function ensurePath(folderPath) {
   const segs = segmentsFrom(state.rootPath, target);
   let cursor = state.rootPath;
   for (const seg of segs) {
-    if (!state.nodes.has(seg.path)) {
+    const existing = state.nodes.get(seg.path);
+    if (existing?.kind === "file") return seg.path;
+    if (!existing) {
       state.nodes.set(seg.path, {
         id: seg.path,
         name: seg.name,
@@ -1690,15 +1690,51 @@ async function ensurePath(folderPath) {
         childIds: [],
         hasChildren: true,
         childrenLoaded: false,
+        kind: "folder",
       });
-      const parent = state.nodes.get(cursor);
-      if (parent && !parent.childIds.includes(seg.path)) parent.childIds.push(seg.path);
-      state.parentOf.set(seg.path, cursor);
+      attachChildNode(cursor, seg.path);
     }
     cursor = seg.path;
     await loadChildren(cursor);
   }
   return target;
+}
+
+async function ensureFile(filePath) {
+  if (!filePath) return state.rootId;
+  if (state.mode === "demo") return state.nodes.has(filePath) ? filePath : state.rootId;
+  if (!inRoot(filePath) || filePath === state.rootPath) return state.rootId;
+  const folder = parentFolder(filePath);
+  const parentId = await ensurePath(folder === filePath ? state.rootPath : folder);
+  const name = filePath.split("/").filter(Boolean).pop() || filePath;
+  const existing = state.nodes.get(filePath);
+  if (existing) {
+    existing.kind = "file";
+    existing.hasChildren = false;
+    existing.childrenLoaded = true;
+    existing.parentId = parentId;
+  } else {
+    state.nodes.set(filePath, {
+      id: filePath,
+      name,
+      path: filePath,
+      parentId,
+      childIds: [],
+      hasChildren: false,
+      childrenLoaded: true,
+      kind: "file",
+    });
+  }
+  attachChildNode(parentId, filePath);
+  return filePath;
+}
+
+async function ensureVisit(folderPath, filePath) {
+  if (filePath && inRoot(filePath) && filePath !== state.rootPath) {
+    return ensureFile(filePath);
+  }
+  if (folderPath && inRoot(folderPath)) return ensurePath(folderPath);
+  return state.rootId;
 }
 
 function expandPath(folderPath) {
@@ -1708,7 +1744,7 @@ function expandPath(folderPath) {
   }
 }
 
-async function relayout({ tween = true, force = false } = {}) {
+async function relayout({ tween = true, force = false }: { tween?: boolean; force?: boolean } = {}) {
   if (force || !state.layout) {
     const prev = state.layout?.pos ? new Map(state.layout.pos) : null;
     const laid = fitAndLayout();
@@ -1736,8 +1772,8 @@ function edgeFor(from, to, pos) {
   return edgePath(a.x, a.y, b.x, b.y);
 }
 
-function measurePath(d) {
-  const path = el("path", { d, fill: "none", stroke: "none" }, defs);
+function measurePath(d: string) {
+  const path = el("path", { d, fill: "none", stroke: "none" }, defs) as SVGPathElement;
   const len = path.getTotalLength();
   const at = (u) => path.getPointAtLength(Math.min(len, Math.max(0, u * len)));
   return {
@@ -1751,7 +1787,7 @@ function measurePath(d) {
   };
 }
 
-function animateAlong(agent, d, ms, reverse = false) {
+function animateAlong(agent: AgentMark, d: string | null | undefined, ms: number, reverse = false) {
   if (!d) return Promise.resolve();
   const epoch = trailEpoch;
   const measured = measurePath(d);
@@ -1763,9 +1799,9 @@ function animateAlong(agent, d, ms, reverse = false) {
     measured.release();
     return Promise.resolve();
   }
-  return new Promise((resolve) => {
+  return new Promise<void>((resolve) => {
     const t0 = performance.now();
-    const frame = (now) => {
+    const frame = (now: number) => {
       if (epoch !== trailEpoch) {
         measured.release();
         resolve();
@@ -1787,7 +1823,7 @@ function animateAlong(agent, d, ms, reverse = false) {
   });
 }
 
-async function travel(agent, destId) {
+async function travel(agent: AgentMark, destId: string) {
   const epoch = trailEpoch;
   const start = agent.nodeId || state.rootId;
   if (start === destId) {
@@ -1845,7 +1881,11 @@ function enqueue(agentId, fn) {
   return next;
 }
 
-async function visit(agentId, folderPath, meta = {}) {
+async function visit(
+  agentId: string | null | undefined,
+  folderPath: string,
+  meta: { agentLabel?: string; filePath?: string | null; toolName?: string } = {},
+) {
   const id = agentId || "main";
   if (
     state.mode === "live" &&
@@ -1853,12 +1893,9 @@ async function visit(agentId, folderPath, meta = {}) {
     id !== state.sessionId
   ) {
     return enqueue(`trail:${id}`, async () => {
-      const resolved = await ensurePath(folderPath);
+      const resolved = await ensureVisit(folderPath, meta.filePath);
       expandPath(resolved);
-      state.visited.set(resolved, (state.visited.get(resolved) || 0) + 1);
-      for (const anc of ancestorsOf(resolved)) {
-        if (!state.visited.has(anc)) state.visited.set(anc, 1);
-      }
+      markTrail(resolved, true);
       const added = appendMissingNodes();
       rememberTrailEdges(state.layout);
       if (added.length) drawTree(state.layout, { entering: new Set(added) });
@@ -1866,15 +1903,12 @@ async function visit(agentId, folderPath, meta = {}) {
     });
   }
   return enqueue(id, async () => {
-    const resolved = await ensurePath(folderPath);
+    const resolved = await ensureVisit(folderPath, meta.filePath);
     const agent = ensureAgent(id, meta.agentLabel);
     agent.targetId = resolved;
     expandPath(resolved);
     state.lastFocus.set(resolved, Date.now());
-    state.visited.set(resolved, (state.visited.get(resolved) || 0) + 1);
-    for (const anc of ancestorsOf(resolved)) {
-      if (!state.visited.has(anc)) state.visited.set(anc, 1);
-    }
+    markTrail(resolved, true);
     const added = appendMissingNodes();
     rememberTrailEdges(state.layout);
     if (added.length) {
@@ -1897,6 +1931,10 @@ async function onNodeClick(id) {
   els.menu.hidden = true;
   const node = state.nodes.get(id);
   if (!node) return;
+  if (node.kind === "file") {
+    peekHere(node.parentId, node.path);
+    return;
+  }
   if (node.hasChildren && !node.childrenLoaded && state.mode === "live") {
     await loadChildren(id);
   }
@@ -1972,9 +2010,15 @@ function startDemo() {
       setLive("on", "demo idle");
       return;
     }
-    const folder = steps[i];
+    const dest = steps[i];
     i += 1;
-    await visit("main", folder, { toolName: "list_dir", agentLabel: "agent" });
+    const node = state.nodes.get(dest);
+    const isFile = node?.kind === "file";
+    await visit("main", isFile ? node.parentId || dest : dest, {
+      toolName: isFile ? "read_file" : "list_dir",
+      filePath: isFile ? dest : null,
+      agentLabel: "agent",
+    });
     demoTimer = window.setTimeout(tick, 280);
   };
   tick();
@@ -2018,7 +2062,8 @@ function connectStream() {
     }
     if (data.type === "visit") {
       if (state.mode !== "live") return;
-      if (!inRoot(data.folderPath) && data.cwd && data.cwd !== state.rootPath) return;
+      const loc = data.filePath || data.folderPath;
+      if (!inRoot(loc) && data.cwd && data.cwd !== state.rootPath) return;
       setLive("on", "exploring");
       visit(data.agentId, data.folderPath, {
         toolName: data.toolName,
@@ -2038,12 +2083,12 @@ els.opacity?.addEventListener("change", () => {
   applyOpacity(Number(els.opacity.value) / 100, { persist: true });
 });
 els.themeSeg?.addEventListener("click", (ev) => {
-  const btn = ev.target.closest("button[data-theme]");
+  const btn = (ev.target as Element | null)?.closest<HTMLButtonElement>("button[data-theme]");
   if (!btn) return;
   applyTheme(btn.dataset.theme, { persist: true });
 });
 els.followSeg?.addEventListener("click", (ev) => {
-  const btn = ev.target.closest("button[data-follow]");
+  const btn = (ev.target as Element | null)?.closest<HTMLButtonElement>("button[data-follow]");
   if (!btn) return;
   applyFollow(btn.dataset.follow, { persist: true });
 });
@@ -2069,12 +2114,13 @@ if (window.ResizeObserver) {
 }
 
 document.addEventListener("click", (ev) => {
-  if (els.menu && !els.menu.contains(ev.target)) els.menu.hidden = true;
-  if (els.colorPick && !els.colorPick.contains(ev.target)) setColorMenuOpen(false);
-  if (els.sessionPicker && !els.sessionPicker.hidden && !els.sessionPicker.contains(ev.target)) {
+  const target = ev.target as Node | null;
+  if (els.menu && !els.menu.contains(target)) els.menu.hidden = true;
+  if (els.colorPick && !els.colorPick.contains(target)) setColorMenuOpen(false);
+  if (els.sessionPicker && !els.sessionPicker.hidden && !els.sessionPicker.contains(target)) {
     setSessionPickerOpen(false);
   }
-  if (els.settingsPicker && !els.settingsPicker.hidden && !els.settingsPicker.contains(ev.target)) {
+  if (els.settingsPicker && !els.settingsPicker.hidden && !els.settingsPicker.contains(target)) {
     setSettingsPickerOpen(false);
   }
 });

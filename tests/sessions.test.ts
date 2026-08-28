@@ -3,9 +3,9 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { describe, it } from "node:test";
-import { extractVisit, visitFromAcpRecord } from "../lib/extract.js";
-import { readClaudeSessions } from "../server/claude.js";
-import { readCodexSessions } from "../server/codex.js";
+import { extractVisit, visitFromAcpRecord } from "../lib/extract.ts";
+import { readClaudeSessions } from "../server/claude.ts";
+import { readCodexSessions } from "../server/codex.ts";
 import {
   encodeCwd,
   isUserPromptEvent,
@@ -19,7 +19,7 @@ import {
   replaySession,
   rosterFingerprint,
   SessionHub,
-} from "../server/sessions.js";
+} from "../server/sessions.ts";
 
 describe("ACP visit parsing", () => {
   it("reads list_dir as the directory itself", () => {
@@ -37,6 +37,7 @@ describe("ACP visit parsing", () => {
       },
       { session_id: "s1", cwd: "/repo" },
     );
+    assert.ok(parsed);
     assert.equal(parsed.visit.folderPath, "/repo/lib");
     assert.equal(parsed.visit.filePath, null);
   });
@@ -56,6 +57,7 @@ describe("ACP visit parsing", () => {
       }),
       { session_id: "s1", cwd: "/repo" },
     );
+    assert.ok(parsed);
     assert.equal(parsed.visit.folderPath, "/repo/web");
     assert.equal(parsed.visit.filePath, "/repo/web/app.js");
   });
@@ -71,6 +73,7 @@ describe("ACP visit parsing", () => {
         },
       },
     });
+    assert.ok(parsed);
     assert.equal(parsed.visit.folderPath, "/repo/src");
   });
 
@@ -183,6 +186,7 @@ describe("readActiveSessions", () => {
     assert.equal(roster.length, 1);
     assert.equal(roster[0].title, "Fix login");
     const visits = replaySession(roster[0], home);
+    assert.ok(visits[0]);
     assert.equal(visits[0].folderPath, "/Users/me/proj/src");
   });
 
@@ -386,7 +390,7 @@ describe("focused Orca session", () => {
       { session_id: "now", cwd: "/Users/me/proj", live: true, mtime: 3 },
       { session_id: "other", cwd: "/Users/me/other", live: true, mtime: 99 },
     ];
-    assert.equal(pickFocusedSession(roster, "/Users/me/proj").session_id, "now");
+    assert.equal(pickFocusedSession(roster, "/Users/me/proj")?.session_id, "now");
   });
 
   it("prefers the Orca pane session id over a cwd match", () => {
@@ -395,7 +399,7 @@ describe("focused Orca session", () => {
       { session_id: "now", cwd: "/Users/me/proj", live: true, mtime: 3 },
     ];
     assert.equal(
-      pickFocusedSession(roster, { cwd: "/Users/me/proj", sessionId: "now" }).session_id,
+      pickFocusedSession(roster, { cwd: "/Users/me/proj", sessionId: "now" })?.session_id,
       "now",
     );
   });
@@ -463,7 +467,7 @@ describe("focused Orca session", () => {
       fs.mkdirSync(dir, { recursive: true });
       fs.writeFileSync(path.join(dir, "summary.json"), JSON.stringify({ generated_title: row.session_id }));
     }
-    const events = [];
+    const events: Array<{ type?: string; sessionId?: string | null }> = [];
     const hub = new SessionHub({ home, emit: (event) => events.push(event) });
     hub.followMode = "focus";
     hub.selectedId = "keep";
@@ -495,12 +499,134 @@ describe("focused Orca session", () => {
   });
 });
 
+describe("visit trail snapshot", () => {
+  it("keeps the full unique visit trail, not only the last 40 folders", () => {
+    const home = fs.mkdtempSync(path.join(os.tmpdir(), "plexus-trail-"));
+    const cwd = "/Users/me/proj";
+    const id = "01ffffffffffffffffffffffffff";
+    const dir = path.join(home, "sessions", encodeCwd(cwd), id);
+    fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(
+      path.join(home, "active_sessions.json"),
+      JSON.stringify([{ session_id: id, pid: process.pid, cwd, opened_at: "2026-01-01T00:00:00Z" }]),
+    );
+    fs.writeFileSync(path.join(dir, "summary.json"), JSON.stringify({ generated_title: "Trail", agent_name: "grok-build" }));
+    const lines = [];
+    for (let i = 0; i < 55; i += 1) {
+      lines.push(
+        JSON.stringify({
+          params: {
+            update: {
+              sessionUpdate: "tool_call",
+              toolCallId: `t${i}`,
+              rawInput: { target_file: `${cwd}/pkg${i}/src/a.ts` },
+              _meta: { "x.ai/tool": { name: "read_file" } },
+            },
+          },
+        }),
+      );
+    }
+    fs.writeFileSync(path.join(dir, "updates.jsonl"), `${lines.join("\n")}\n`);
+    const hub = new SessionHub({ home, emit: () => {} });
+    hub.scanRoster();
+    hub.syncTails();
+    const snap = hub.snapshot();
+    assert.equal(snap.visited.length, 55);
+    assert.equal(snap.visited[0], `${cwd}/pkg0/src`);
+    assert.equal(snap.visited[54], `${cwd}/pkg54/src`);
+    assert.equal(snap.files.length, 55);
+    assert.equal(snap.files[0], `${cwd}/pkg0/src/a.ts`);
+    assert.equal(snap.files[54], `${cwd}/pkg54/src/a.ts`);
+    assert.equal(snap.agents[0].filePath, `${cwd}/pkg54/src/a.ts`);
+    hub.stop();
+  });
+
+  it("keeps unique visited files and parks on the last file", () => {
+    const home = fs.mkdtempSync(path.join(os.tmpdir(), "plexus-files-"));
+    const cwd = "/Users/me/proj";
+    const id = "01eeeeeeeeeeeeeeeeeeeeeeeeee";
+    const dir = path.join(home, "sessions", encodeCwd(cwd), id);
+    fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(
+      path.join(home, "active_sessions.json"),
+      JSON.stringify([{ session_id: id, pid: process.pid, cwd, opened_at: "2026-01-01T00:00:00Z" }]),
+    );
+    fs.writeFileSync(path.join(dir, "summary.json"), JSON.stringify({ generated_title: "Files", agent_name: "grok-build" }));
+    const tool = (toolCallId: string, rawInput: Record<string, string>, name: string) =>
+      JSON.stringify({
+        params: {
+          update: {
+            sessionUpdate: "tool_call",
+            toolCallId,
+            rawInput,
+            _meta: { "x.ai/tool": { name } },
+          },
+        },
+      });
+    fs.writeFileSync(
+      path.join(dir, "updates.jsonl"),
+      [
+        tool("d1", { target_directory: `${cwd}/src` }, "list_dir"),
+        tool("f1", { target_file: `${cwd}/src/a.ts` }, "read_file"),
+        tool("f2", { target_file: `${cwd}/src/b.ts` }, "read_file"),
+        tool("f3", { target_file: `${cwd}/src/a.ts` }, "read_file"),
+        tool("d2", { target_directory: `${cwd}/lib` }, "list_dir"),
+      ].join("\n") + "\n",
+    );
+    const hub = new SessionHub({ home, emit: () => {} });
+    hub.scanRoster();
+    hub.syncTails();
+    const snap = hub.snapshot();
+    assert.deepEqual(snap.visited, [`${cwd}/src`, `${cwd}/lib`]);
+    assert.deepEqual(snap.files, [`${cwd}/src/a.ts`, `${cwd}/src/b.ts`]);
+    assert.equal(snap.agents[0].filePath, null);
+    assert.equal(snap.agents[0].folderPath, `${cwd}/lib`);
+    hub.stop();
+  });
+
+  it("parks the agent on a file when the last visit is a file", () => {
+    const home = fs.mkdtempSync(path.join(os.tmpdir(), "plexus-lastfile-"));
+    const cwd = "/Users/me/proj";
+    const id = "01dddddddddddddddddddddddddd";
+    const dir = path.join(home, "sessions", encodeCwd(cwd), id);
+    fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(
+      path.join(home, "active_sessions.json"),
+      JSON.stringify([{ session_id: id, pid: process.pid, cwd, opened_at: "2026-01-01T00:00:00Z" }]),
+    );
+    fs.writeFileSync(path.join(dir, "summary.json"), JSON.stringify({ generated_title: "Last", agent_name: "grok-build" }));
+    fs.writeFileSync(
+      path.join(dir, "updates.jsonl"),
+      `${JSON.stringify({
+        params: {
+          update: {
+            sessionUpdate: "tool_call",
+            toolCallId: "f1",
+            rawInput: { target_file: `${cwd}/src/app.ts` },
+            _meta: { "x.ai/tool": { name: "read_file" } },
+          },
+        },
+      })}\n`,
+    );
+    const hub = new SessionHub({ home, emit: () => {} });
+    hub.scanRoster();
+    hub.syncTails();
+    const snap = hub.snapshot();
+    assert.deepEqual(snap.files, [`${cwd}/src/app.ts`]);
+    assert.equal(snap.agents[0].filePath, `${cwd}/src/app.ts`);
+    assert.equal(snap.agents[0].folderPath, `${cwd}/src`);
+    hub.stop();
+  });
+});
+
 describe("extractVisit grep heuristic", () => {
   it("keeps a directory grep on that directory", () => {
     const visit = extractVisit({
       toolName: "grep",
       toolInput: { path: "/repo/src", pattern: "TODO" },
     });
+    assert.ok(visit);
+    assert.ok(visit);
     assert.equal(visit.folderPath, "/repo/src");
   });
 });

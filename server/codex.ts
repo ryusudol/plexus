@@ -1,42 +1,28 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { visitFromCodexRecord } from "../lib/extract.js";
+import { LIVE_MS } from "../lib/config.ts";
+import { newestById, peekJsonl, tryParseJson } from "../lib/node.ts";
+import { visitFromCodexRecord } from "../lib/extract.ts";
+import type { LineParse, SessionHint, SessionRow } from "../lib/types.ts";
+import {
+  commandGroup,
+  ensureHookList,
+  hasPlexusLauncher,
+  loadHooksFile,
+  migrateLauncherCommands,
+  saveHooksFile,
+} from "./hooks.ts";
 
-const LIVE_MS = 15 * 60 * 1000;
 const ROLLOUT = /^rollout-.*-([0-9a-fA-F-]{36})\.jsonl$/;
 
-export function codexHome() {
+export function codexHome(): string {
   return process.env.CODEX_HOME || path.join(os.homedir(), ".codex");
 }
 
-function peekRecords(file, limit = 20) {
-  let text = "";
-  try {
-    const fd = fs.openSync(file, "r");
-    const buf = Buffer.alloc(16 * 1024);
-    const n = fs.readSync(fd, buf, 0, buf.length, 0);
-    fs.closeSync(fd);
-    text = buf.slice(0, n).toString("utf8");
-  } catch {
-    return [];
-  }
-  const rows = [];
-  for (const line of text.split("\n")) {
-    if (!line.trim()) continue;
-    try {
-      rows.push(JSON.parse(line));
-    } catch {
-      // skip
-    }
-    if (rows.length >= limit) break;
-  }
-  return rows;
-}
-
-function cwdFromRecords(records) {
+function cwdFromRecords(records: Record<string, unknown>[]): string | null {
   for (const record of records) {
-    const payload = record?.payload;
+    const payload = record?.payload && typeof record.payload === "object" ? (record.payload as Record<string, unknown>) : null;
     if (record?.type === "session_meta" && payload && typeof payload.cwd === "string") {
       return payload.cwd;
     }
@@ -45,18 +31,14 @@ function cwdFromRecords(records) {
   return null;
 }
 
-export function parseCodexLine(line, session) {
-  let record;
-  try {
-    record = JSON.parse(line);
-  } catch {
-    return { visits: [], activity: null, prompt: false };
-  }
-  const payload = record.payload && typeof record.payload === "object" ? record.payload : record;
+export function parseCodexLine(line: string, session: SessionHint): LineParse {
+  const record = tryParseJson<Record<string, unknown>>(line);
+  if (!record) return { visits: [], activity: null, prompt: false };
+  const payload = record.payload && typeof record.payload === "object" ? (record.payload as Record<string, unknown>) : record;
   const kind = payload.type || record.type;
   const event = payload.type || record.type;
   let prompt = false;
-  let activity = null;
+  let activity: LineParse["activity"] = null;
   if (kind === "message" && payload.role === "user") {
     prompt = true;
     activity = "busy";
@@ -71,9 +53,9 @@ export function parseCodexLine(line, session) {
   return { visits: parsed ? [parsed] : [], activity, prompt };
 }
 
-function walkRollouts(root, now, into, depth = 0) {
+function walkRollouts(root: string, now: number, into: SessionRow[], depth = 0): void {
   if (depth > 5) return;
-  let entries;
+  let entries: fs.Dirent[];
   try {
     entries = fs.readdirSync(root, { withFileTypes: true });
   } catch {
@@ -87,14 +69,14 @@ function walkRollouts(root, now, into, depth = 0) {
     }
     const match = ROLLOUT.exec(entry.name);
     if (!match) continue;
-    let st;
+    let st: fs.Stats;
     try {
       st = fs.statSync(full);
     } catch {
       continue;
     }
     if (now - st.mtimeMs > LIVE_MS) continue;
-    const records = peekRecords(full);
+    const records = peekJsonl(full, 20);
     const cwd = cwdFromRecords(records);
     if (!cwd) continue;
     const nativeId = match[1];
@@ -113,9 +95,9 @@ function walkRollouts(root, now, into, depth = 0) {
   }
 }
 
-function recentDayDirs(home, now) {
+function recentDayDirs(home: string, now: number): string[] {
   const root = path.join(home, "sessions");
-  const dirs = [];
+  const dirs: string[] = [];
   for (const delta of [0, 1, 2]) {
     const local = new Date(now - delta * 86400000);
     const utc = new Date(now - delta * 86400000);
@@ -137,54 +119,37 @@ function recentDayDirs(home, now) {
   return [...new Set(dirs)];
 }
 
-export function readCodexSessions(home = codexHome(), now = Date.now()) {
-  const out = [];
+export function readCodexSessions(home = codexHome(), now = Date.now()): SessionRow[] {
+  const out: SessionRow[] = [];
   const dirs = recentDayDirs(home, now);
   if (!dirs.length) walkRollouts(path.join(home, "sessions"), now, out);
   for (const dir of dirs) walkRollouts(dir, now, out);
-  const byId = new Map();
-  for (const row of out) byId.set(row.session_id, row);
-  return [...byId.values()].sort((a, b) => b.mtime - a.mtime);
+  return newestById(out);
 }
 
-export function installCodexHooks({ nodePath, launcher, hookBin }) {
+export function installCodexHooks({
+  nodePath,
+  launcher,
+  hookBin,
+}: {
+  nodePath: string;
+  launcher: string;
+  hookBin: string;
+}): void {
   const file = path.join(codexHome(), "hooks.json");
-  let spec = {};
-  try {
-    spec = JSON.parse(fs.readFileSync(file, "utf8"));
-  } catch {
-    spec = {};
-  }
-  if (!spec || typeof spec !== "object") spec = {};
-  if (!spec.hooks || typeof spec.hooks !== "object") spec.hooks = {};
+  const spec = loadHooksFile(file);
+  migrateLauncherCommands(spec.hooks);
   const blob = JSON.stringify(spec.hooks);
-  if (!blob.includes("bin/plexus.js")) {
-    if (!Array.isArray(spec.hooks.SessionStart)) spec.hooks.SessionStart = [];
-    spec.hooks.SessionStart.push({
-      hooks: [
-        {
-          type: "command",
-          command: `${nodePath} "${launcher}" --ensure`,
-          timeout: 8,
-        },
-      ],
-    });
+  if (!hasPlexusLauncher(blob)) {
+    ensureHookList(spec.hooks, "SessionStart").push(
+      commandGroup(`${nodePath} "${launcher}" --ensure`, 8),
+    );
   }
   if (!blob.includes("plexus-hook")) {
-    const command = {
-      hooks: [
-        {
-          type: "command",
-          command: `${nodePath} "${hookBin}" --source codex`,
-          timeout: 2,
-        },
-      ],
-    };
+    const command = commandGroup(`${nodePath} "${hookBin}" --source codex`, 2);
     for (const event of ["PreToolUse", "UserPromptSubmit", "Stop"]) {
-      if (!Array.isArray(spec.hooks[event])) spec.hooks[event] = [];
-      spec.hooks[event].push(command);
+      ensureHookList(spec.hooks, event).push(command);
     }
   }
-  fs.mkdirSync(path.dirname(file), { recursive: true });
-  fs.writeFileSync(file, `${JSON.stringify(spec, null, 2)}\n`);
+  saveHooksFile(file, spec);
 }

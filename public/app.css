@@ -749,12 +749,6 @@ html[data-picker="open"] .stage-tools button::after {
   flex: none;
   padding: 8px 10px;
   border-radius: 10px;
-  transition: background-color 0.18s ease;
-}
-
-#settings-picker .cell:hover,
-#settings-picker .glass-cell:hover {
-  background: var(--menu-hover);
 }
 
 #settings-picker .cell-k {
@@ -798,13 +792,27 @@ html[data-picker="open"] .stage-tools button::after {
 }
 
 #settings-picker .icon-seg {
-  flex: 0 0 auto;
-  max-width: none;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex: 1 1 auto;
+  max-width: 188px;
 }
 
 #settings-picker .icon-seg button {
-  width: 24px;
+  flex: 1 1 0;
+  width: auto;
+  min-width: 0;
   height: 20px;
+  padding: 0;
+  display: grid;
+  place-items: center;
+  justify-items: center;
+}
+
+#settings-picker .icon-seg svg {
+  display: block;
+  margin: 0 auto;
 }
 
 #settings-picker .color-row {
@@ -1019,8 +1027,13 @@ html[data-picker="open"] .stage-tools button::after {
 }
 
 .folder.born,
+.file.born,
 .link.born {
   animation: graph-born 480ms ease-out both;
+}
+
+.file-mark {
+  pointer-events: none;
 }
 
 @keyframes graph-born {

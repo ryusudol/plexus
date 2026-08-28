@@ -2,7 +2,7 @@ import { execFileSync } from "node:child_process";
 
 const AGENT_BIN = /^(claude|codex|codex-cli)$/;
 
-export function listAgentPids() {
+export function listAgentPids(): number[] {
   let text = "";
   try {
     text = execFileSync("ps", ["-axo", "pid=,command="], {
@@ -12,7 +12,7 @@ export function listAgentPids() {
   } catch {
     return [];
   }
-  const pids = [];
+  const pids: number[] = [];
   for (const line of text.split("\n")) {
     const match = line.trim().match(/^(\d+)\s+(.*)$/);
     if (!match) continue;
@@ -20,7 +20,7 @@ export function listAgentPids() {
     const command = match[2];
     if (!pid || command.includes("plexus")) continue;
     const base = command.split(/\s+/)[0].split("/").pop();
-    if (AGENT_BIN.test(base)) pids.push(pid);
+    if (base && AGENT_BIN.test(base)) pids.push(pid);
   }
   return pids;
 }

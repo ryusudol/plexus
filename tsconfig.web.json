@@ -1,0 +1,11 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "strict": false,
+    "noImplicitAny": false,
+    "strictNullChecks": false,
+    "noImplicitReturns": false
+  },
+  "include": ["public/**/*.ts", "lib/layout.ts", "lib/extract.ts", "lib/demo-tree.ts", "lib/types.ts", "lib/record.ts"],
+  "exclude": []
+}

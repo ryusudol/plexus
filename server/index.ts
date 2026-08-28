@@ -1,25 +1,27 @@
 import fs from "node:fs";
 import http from "node:http";
-import os from "node:os";
 import path from "node:path";
-import { fileURLToPath } from "node:url";
-import { extractVisit, inferProvider } from "../lib/extract.js";
-import { plexusDir } from "../lib/paths.js";
-import { installClaudeHooks } from "./claude.js";
-import { installCodexHooks } from "./codex.js";
-import { listFolders, folderName } from "./fs-tree.js";
-import { SessionHub } from "./sessions.js";
+import { HOST, PORT } from "../lib/config.ts";
+import { extractVisit, inferProvider, type VisitEvent } from "../lib/extract.ts";
+import { collectStream, errMessage, repoRoot } from "../lib/node.ts";
+import { plexusDir } from "../lib/paths.ts";
+import type { HubEvent, Prefs } from "../lib/types.ts";
+import { installClaudeHooks } from "./claude.ts";
+import { installCodexHooks } from "./codex.ts";
+import { listFolders, folderName } from "./fs-tree.ts";
+import { installGrokHooks } from "./hooks.ts";
+import { readPrefs, writePrefs } from "./prefs.ts";
+import { SessionHub } from "./sessions.ts";
+import { resolveBrowserScript, transpileBrowserTs } from "./transpile.ts";
 
-const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const ROOT = path.resolve(__dirname, "..");
+const ROOT = repoRoot(import.meta.url);
 const PUBLIC = path.join(ROOT, "public");
 const LIB = path.join(ROOT, "lib");
-const PORT = Number(process.env.PORT || 7733);
-const HOST = "127.0.0.1";
 
-const MIME = {
+const MIME: Record<string, string> = {
   ".html": "text/html; charset=utf-8",
   ".js": "text/javascript; charset=utf-8",
+  ".ts": "text/javascript; charset=utf-8",
   ".css": "text/css; charset=utf-8",
   ".json": "application/json; charset=utf-8",
   ".svg": "image/svg+xml",
@@ -30,11 +32,16 @@ const MIME = {
   ".webp": "image/webp",
 };
 
-const clients = new Set();
+const clients = new Set<http.ServerResponse>();
 let workspaceRoot = process.env.PLEXUS_ROOT || process.env.GROK_EXPLORE_ROOT || process.cwd();
-const recentVisit = new Map();
+const recentVisit = new Map<string, number>();
 
-function send(res, status, body, headers = {}) {
+function send(
+  res: http.ServerResponse,
+  status: number,
+  body: unknown,
+  headers: Record<string, string | number> = {},
+): void {
   const payload = typeof body === "string" ? body : JSON.stringify(body);
   res.writeHead(status, {
     "Content-Type": "application/json; charset=utf-8",
@@ -44,16 +51,11 @@ function send(res, status, body, headers = {}) {
   res.end(payload);
 }
 
-function readBody(req) {
-  return new Promise((resolve, reject) => {
-    const chunks = [];
-    req.on("data", (c) => chunks.push(c));
-    req.on("end", () => resolve(Buffer.concat(chunks).toString("utf8")));
-    req.on("error", reject);
-  });
+function readBody(req: http.IncomingMessage): Promise<string> {
+  return collectStream(req).then((buf) => buf.toString("utf8"));
 }
 
-function broadcast(event) {
+function broadcast(event: HubEvent): void {
   if (event.type === "visit") {
     const key = `${event.agentId}|${event.folderPath}|${event.toolName || ""}`;
     const now = Date.now();
@@ -70,7 +72,7 @@ function broadcast(event) {
   }
 }
 
-function safeResolve(input) {
+function safeResolve(input: string | null | undefined): string | null {
   if (!input) return null;
   const resolved = path.resolve(input);
   try {
@@ -82,7 +84,7 @@ function safeResolve(input) {
   }
 }
 
-function setRoot(next, { emit = true } = {}) {
+function setRoot(next: string | null | undefined, { emit = true } = {}): string | null {
   const resolved = safeResolve(next);
   if (!resolved) return null;
   if (resolved !== workspaceRoot) {
@@ -94,43 +96,10 @@ function setRoot(next, { emit = true } = {}) {
   return resolved;
 }
 
-function installHook() {
-  const hooksDir = path.join(os.homedir(), ".grok", "hooks");
-  fs.mkdirSync(hooksDir, { recursive: true });
-  const launcher = path.join(ROOT, "bin", "plexus.js");
-  const url = `http://${HOST}:${PORT}/hook`;
-  const spec = {
-    hooks: {
-      SessionStart: [
-        {
-          hooks: [
-            {
-              type: "command",
-              command: `${process.execPath} "${launcher}" --ensure`,
-              timeout: 8,
-            },
-          ],
-        },
-      ],
-      PreToolUse: [
-        { hooks: [{ type: "http", url, timeout: 2 }] },
-      ],
-    },
-  };
-  const payload = `${JSON.stringify(spec, null, 2)}\n`;
-  fs.writeFileSync(path.join(hooksDir, "plexus.json"), payload);
-  fs.mkdirSync(path.join(ROOT, "hooks"), { recursive: true });
-  fs.writeFileSync(path.join(ROOT, "hooks", "plexus.json"), payload);
-  for (const stale of ["grok-explore.json"]) {
-    for (const dir of [hooksDir, path.join(ROOT, "hooks")]) {
-      try {
-        fs.unlinkSync(path.join(dir, stale));
-      } catch {
-        // none
-      }
-    }
-  }
-  const hookBin = path.join(ROOT, "bin", "plexus-hook.js");
+function installHook(): void {
+  const launcher = path.join(ROOT, "bin", "plexus.ts");
+  const url = installGrokHooks(ROOT, process.execPath, launcher);
+  const hookBin = path.join(ROOT, "bin", "plexus-hook.ts");
   try {
     installClaudeHooks({
       nodePath: process.execPath,
@@ -139,7 +108,7 @@ function installHook() {
       url,
     });
   } catch (err) {
-    console.error("Could not install Claude Code hook:", err.message);
+    console.error("Could not install Claude Code hook:", errMessage(err));
   }
   try {
     installCodexHooks({
@@ -148,25 +117,36 @@ function installHook() {
       hookBin,
     });
   } catch (err) {
-    console.error("Could not install Codex hook:", err.message);
+    console.error("Could not install Codex hook:", errMessage(err));
   }
 }
 
-function serveStatic(req, res, url) {
+function serveStatic(req: http.IncomingMessage, res: http.ServerResponse, url: URL): boolean {
   let rel = decodeURIComponent(url.pathname);
   if (rel === "/") rel = "/index.html";
   const trimmed = rel.replace(/^\/+/, "");
   const filePath = rel.startsWith("/lib/")
     ? path.join(ROOT, trimmed)
     : path.join(PUBLIC, trimmed);
-  const resolved = path.resolve(filePath);
+  let resolved = path.resolve(filePath);
   const allowed = rel.startsWith("/lib/") ? LIB : PUBLIC;
   if (resolved !== allowed && !resolved.startsWith(allowed + path.sep)) {
     send(res, 403, { error: "forbidden" });
     return true;
   }
+  resolved = resolveBrowserScript(resolved);
   if (!fs.existsSync(resolved) || fs.statSync(resolved).isDirectory()) return false;
   const ext = path.extname(resolved);
+  if (ext === ".ts") {
+    const body = transpileBrowserTs(resolved);
+    if (body == null) return false;
+    res.writeHead(200, {
+      "Content-Type": "text/javascript; charset=utf-8",
+      "Cache-Control": "no-store",
+    });
+    res.end(body);
+    return true;
+  }
   res.writeHead(200, {
     "Content-Type": MIME[ext] || "application/octet-stream",
     "Cache-Control": "no-store",
@@ -175,10 +155,10 @@ function serveStatic(req, res, url) {
   return true;
 }
 
-function handleHookPayload(payload) {
-  let event;
+function handleHookPayload(payload: string | VisitEvent): { ok: boolean; decision?: string; hookSpecificOutput?: Record<string, string> } {
+  let event: VisitEvent;
   try {
-    event = typeof payload === "string" ? JSON.parse(payload || "{}") : payload;
+    event = (typeof payload === "string" ? JSON.parse(payload || "{}") : payload) as VisitEvent;
   } catch {
     return { ok: false };
   }
@@ -210,28 +190,10 @@ function handleHookPayload(payload) {
   };
 }
 
-function writePid() {
+function writePid(): void {
   const dir = plexusDir();
   fs.writeFileSync(path.join(dir, "backend.pid"), String(process.pid));
   fs.writeFileSync(path.join(dir, "backend.port"), String(PORT));
-}
-
-const PREFS_FILE = path.join(plexusDir(), "prefs.json");
-
-function readPrefs() {
-  try {
-    return JSON.parse(fs.readFileSync(PREFS_FILE, "utf8"));
-  } catch {
-    return { accent: "#ff4fcb" };
-  }
-}
-
-function writePrefs(next) {
-  fs.mkdirSync(path.dirname(PREFS_FILE), { recursive: true });
-  const prefs = { ...readPrefs(), ...next };
-  if (prefs.agentSymbol === null) delete prefs.agentSymbol;
-  fs.writeFileSync(PREFS_FILE, `${JSON.stringify(prefs)}\n`);
-  return prefs;
 }
 
 const hub = new SessionHub({
@@ -262,10 +224,10 @@ const server = http.createServer(async (req, res) => {
     const snap = hub.snapshot();
     const root = snap.root || workspaceRoot;
     send(res, 200, {
+      ...snap,
       root,
       name: folderName(root, root),
       sep: path.sep,
-      ...snap,
     });
     return;
   }
@@ -276,8 +238,8 @@ const server = http.createServer(async (req, res) => {
   }
 
   if (req.method === "POST" && url.pathname === "/api/prefs") {
-    const body = JSON.parse((await readBody(req)) || "{}");
-    const patch = {};
+    const body = JSON.parse((await readBody(req)) || "{}") as Prefs;
+    const patch: Prefs = {};
     if (typeof body.accent === "string" && /^#[0-9a-fA-F]{6}$/.test(body.accent)) {
       patch.accent = body.accent;
     }
@@ -322,7 +284,7 @@ const server = http.createServer(async (req, res) => {
   }
 
   if (req.method === "POST" && url.pathname === "/api/attach") {
-    const body = JSON.parse((await readBody(req)) || "{}");
+    const body = JSON.parse((await readBody(req)) || "{}") as { sessionId?: string };
     if (body.sessionId) {
       hub.select(body.sessionId);
       writePrefs({ sessionId: body.sessionId });
@@ -335,7 +297,7 @@ const server = http.createServer(async (req, res) => {
     const body = await readBody(req);
     let next = workspaceRoot;
     try {
-      next = JSON.parse(body).path || next;
+      next = (JSON.parse(body) as { path?: string }).path || next;
     } catch {
       next = body.trim() || next;
     }
@@ -393,7 +355,7 @@ server.listen(PORT, HOST, () => {
   try {
     installHook();
   } catch (err) {
-    console.error("Could not install Plexus hook:", err.message);
+    console.error("Could not install Plexus hook:", errMessage(err));
   }
   hub.start();
   const snap = hub.snapshot();

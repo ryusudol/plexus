@@ -6,7 +6,7 @@ import {
   segmentsFrom,
   visitFromClaudeRecord,
   visitFromCodexRecord,
-} from "../lib/extract.js";
+} from "../lib/extract.ts";
 
 describe("extractVisit", () => {
   it("maps read_file to the parent folder", () => {
@@ -17,6 +17,7 @@ describe("extractVisit", () => {
       toolInput: { target_file: "/Users/me/proj/src/app.ts" },
       workspaceRoot: "/Users/me/proj",
     });
+    assert.ok(visit);
     assert.equal(visit.folderPath, "/Users/me/proj/src");
     assert.equal(visit.filePath, "/Users/me/proj/src/app.ts");
     assert.equal(visit.agentId, "abc");
@@ -27,6 +28,7 @@ describe("extractVisit", () => {
       toolName: "list_dir",
       toolInput: { target_directory: "/Users/me/proj/lib" },
     });
+    assert.ok(visit);
     assert.equal(visit.folderPath, "/Users/me/proj/lib");
     assert.equal(visit.filePath, null);
   });
@@ -36,6 +38,7 @@ describe("extractVisit", () => {
       name: "read_file",
       arguments: JSON.stringify({ target_file: "/repo/web/page.tsx" }),
     });
+    assert.ok(visit);
     assert.equal(visit.folderPath, "/repo/web");
   });
 
@@ -45,6 +48,7 @@ describe("extractVisit", () => {
       toolInput: { target_file: "./src/main.js" },
       workspaceRoot: "/repo",
     });
+    assert.ok(visit);
     assert.equal(visit.folderPath, "/repo/src");
     assert.equal(visit.filePath, "/repo/src/main.js");
   });
@@ -57,7 +61,7 @@ describe("segmentsFrom", () => {
       segs.map((s) => s.name),
       ["web", "src", "agents"],
     );
-    assert.equal(segs.at(-1).path, "/repo/web/src/agents");
+    assert.equal(segs.at(-1)?.path, "/repo/web/src/agents");
   });
 
   it("returns empty when the path is outside the root", () => {
@@ -80,6 +84,7 @@ describe("glob patterns", () => {
       toolInput: { pattern: "foo", glob: "**/*.{js,css}" },
       workspaceRoot: "/Users/me/proj",
     });
+    assert.ok(visit);
     assert.equal(visit.folderPath, "/Users/me/proj");
   });
 
@@ -89,6 +94,7 @@ describe("glob patterns", () => {
       toolInput: { path: "/Users/me/proj/src/**/*.ts" },
       workspaceRoot: "/Users/me/proj",
     });
+    assert.ok(visit);
     assert.equal(visit.folderPath, "/Users/me/proj/src");
   });
 
@@ -98,6 +104,7 @@ describe("glob patterns", () => {
       toolInput: { pattern: "foo", path: "/Users/me/proj/lib", glob: "**/*.js" },
       workspaceRoot: "/Users/me/proj",
     });
+    assert.ok(visit);
     assert.equal(visit.folderPath, "/Users/me/proj/lib");
   });
 });
@@ -111,6 +118,7 @@ describe("Claude and Codex visits", () => {
       tool_input: { file_path: "/repo/src/app.ts" },
       cwd: "/repo",
     });
+    assert.ok(visit);
     assert.equal(visit.folderPath, "/repo/src");
     assert.equal(inferProvider({ tool_name: "Read" }), "claude");
   });
@@ -138,6 +146,7 @@ describe("Claude and Codex visits", () => {
       },
       { session_id: "uuid-1", cwd: "/repo" },
     );
+    assert.ok(parsed[0]);
     assert.equal(parsed[0].visit.folderPath, "/repo/lib");
   });
 
@@ -154,6 +163,7 @@ describe("Claude and Codex visits", () => {
       },
       { session_id: "s1", cwd: "/repo" },
     );
+    assert.ok(parsed);
     assert.equal(parsed.visit.folderPath, "/repo/web");
     assert.equal(parsed.visit.filePath, "/repo/web/app.js");
   });

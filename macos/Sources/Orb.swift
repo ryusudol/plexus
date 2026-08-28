@@ -1,43 +1,47 @@
 import AppKit
 import QuartzCore
 
-func bundledPNG(_ name: String) -> NSImage? {
-  let urls: [URL?] = [
-    Bundle.main.url(forResource: name, withExtension: "png"),
-    Bundle.main.resourceURL?.appendingPathComponent("\(name).png"),
-    Bundle.main.bundleURL.appendingPathComponent("Contents/Resources/\(name).png"),
-  ]
-  for url in urls {
-    guard let url, FileManager.default.fileExists(atPath: url.path) else { continue }
-    if let image = NSImage(contentsOf: url) { return image }
+/// Hub-and-spoke mark for the idle orb — a repo map, not a vendor mascot.
+final class PlexusGlyph: NSView {
+  override func draw(_ dirtyRect: NSRect) {
+    let cx = bounds.midX
+    let cy = bounds.midY
+    let r = min(bounds.width, bounds.height) * 0.5
+    let hub = NSPoint(x: cx, y: cy)
+    let orbit = r * 0.42
+    let start = CGFloat.pi / 2
+    let nodes = (0..<3).map { i -> NSPoint in
+      let a = start + CGFloat(i) * (.pi * 2 / 3)
+      return NSPoint(x: cx + cos(a) * orbit, y: cy + sin(a) * orbit)
+    }
+    let spoke = NSColor(calibratedWhite: 1, alpha: 0.42)
+    spoke.setStroke()
+    for node in nodes {
+      let line = NSBezierPath()
+      line.move(to: hub)
+      line.line(to: node)
+      line.lineWidth = 1.5
+      line.lineCapStyle = .round
+      line.stroke()
+    }
+    let ring = NSBezierPath()
+    ring.move(to: nodes[0])
+    ring.line(to: nodes[1])
+    ring.line(to: nodes[2])
+    ring.close()
+    ring.lineWidth = 1.15
+    ring.lineJoinStyle = .round
+    ring.lineCapStyle = .round
+    ring.stroke()
+    let ink = NSColor(calibratedWhite: 1, alpha: 0.96)
+    ink.setFill()
+    for node in nodes {
+      let d = r * 0.2
+      NSBezierPath(ovalIn: NSRect(x: node.x - d / 2, y: node.y - d / 2, width: d, height: d)).fill()
+    }
+    let core = r * 0.3
+    NSBezierPath(ovalIn: NSRect(x: hub.x - core / 2, y: hub.y - core / 2, width: core, height: core)).fill()
   }
-  return nil
-}
-
-/// Crop the squircle app icon so the face fills a circle (no black ring).
-func circularFilledIcon(_ source: NSImage, size: CGFloat, zoom: CGFloat = 1.24) -> NSImage {
-  let out = NSImage(size: NSSize(width: size, height: size))
-  out.lockFocus()
-  NSGraphicsContext.current?.imageInterpolation = .high
-  let rect = NSRect(origin: .zero, size: NSSize(width: size, height: size))
-  NSBezierPath(ovalIn: rect).addClip()
-  let draw = NSRect(
-    x: (size - size * zoom) / 2,
-    y: (size - size * zoom) / 2,
-    width: size * zoom,
-    height: size * zoom
-  )
-  source.draw(
-    in: draw,
-    from: NSRect(origin: .zero, size: source.size),
-    operation: .copy,
-    fraction: 1,
-    respectFlipped: true,
-    hints: [.interpolation: NSImageInterpolation.high]
-  )
-  out.unlockFocus()
-  out.isTemplate = false
-  return out
 }
 
 final class TinyClose: NSView {
@@ -97,12 +101,8 @@ final class OrbPanel: NSPanel {
 
 final class OrbView: NSView {
   private let avatar = NSView()
-  private let face = NSImageView()
+  private let glyph = PlexusGlyph(frame: .zero)
   private let dismiss = TinyClose(frame: .zero)
-  private var faces: [String: NSImage] = [:]
-  private var play: [(String, TimeInterval)] = []
-  private var step = 0
-  private var frameTimer: Timer?
   private var hoverTimer: Timer?
   private var tracking: NSTrackingArea?
   private var downMouse: NSPoint?
@@ -129,32 +129,11 @@ final class OrbView: NSView {
     avatar.autoresizingMask = [.width, .height]
     addSubview(avatar)
 
-    face.imageScaling = .scaleAxesIndependently
-    face.animates = false
-    face.wantsLayer = true
-    face.frame = avatar.bounds
-    face.autoresizingMask = [.width, .height]
-    avatar.addSubview(face)
-
-    let source = bundledPNG("agent")
-    let filled = source.map { circularFilledIcon($0, size: max(frame.width, 58)) }
-    faces["idle"] = filled
-    faces["blink"] = filled
-    faces["left"] = filled
-    faces["right"] = filled
-    face.image = filled
-    play = [
-      ("idle", 1.7),
-      ("left", 0.65),
-      ("idle", 0.9),
-      ("blink", 0.12),
-      ("idle", 0.16),
-      ("blink", 0.1),
-      ("idle", 1.35),
-      ("right", 0.65),
-      ("idle", 1.5),
-      ("blink", 0.14),
-    ]
+    let inset = frame.width * 0.08
+    glyph.frame = avatar.bounds.insetBy(dx: inset, dy: inset)
+    glyph.autoresizingMask = [.width, .height]
+    glyph.wantsLayer = true
+    avatar.addSubview(glyph)
 
     let d: CGFloat = 16
     dismiss.frame = NSRect(x: bounds.width - d + 2, y: bounds.height - d + 2, width: d, height: d)
@@ -170,37 +149,31 @@ final class OrbView: NSView {
 
   func startAnimating() {
     stopAnimating()
-    step = 0
-    showStep()
-    addBob()
-    scheduleNext()
+    addPulse()
   }
 
   func stopAnimating() {
-    frameTimer?.invalidate()
-    frameTimer = nil
     hoverTimer?.invalidate()
     hoverTimer = nil
-    face.layer?.removeAllAnimations()
+    glyph.layer?.removeAllAnimations()
     avatar.layer?.removeAllAnimations()
     hideDismiss()
   }
 
-  private func addBob() {
-    face.layer?.removeAnimation(forKey: "bob")
-    let bob = CAKeyframeAnimation(keyPath: "transform")
-    // Scale up only so the circular clip never shows a black ring.
-    bob.values = [
+  private func addPulse() {
+    glyph.layer?.removeAnimation(forKey: "pulse")
+    let pulse = CAKeyframeAnimation(keyPath: "transform")
+    pulse.values = [
       NSValue(caTransform3D: CATransform3DIdentity),
-      NSValue(caTransform3D: CATransform3DMakeScale(1.06, 1.06, 1)),
+      NSValue(caTransform3D: CATransform3DMakeScale(1.08, 1.08, 1)),
       NSValue(caTransform3D: CATransform3DMakeScale(1.02, 1.02, 1)),
       NSValue(caTransform3D: CATransform3DIdentity),
     ]
-    bob.keyTimes = [0, 0.4, 0.72, 1]
-    bob.duration = 2.1
-    bob.repeatCount = .infinity
-    bob.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
-    face.layer?.add(bob, forKey: "bob")
+    pulse.keyTimes = [0, 0.4, 0.72, 1]
+    pulse.duration = 2.1
+    pulse.repeatCount = .infinity
+    pulse.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
+    glyph.layer?.add(pulse, forKey: "pulse")
 
     avatar.layer?.removeAnimation(forKey: "glow")
     let glow = CABasicAnimation(keyPath: "borderColor")
@@ -210,23 +183,6 @@ final class OrbView: NSView {
     glow.autoreverses = true
     glow.repeatCount = .infinity
     avatar.layer?.add(glow, forKey: "glow")
-  }
-
-  private func showStep() {
-    let name = play[step % play.count].0
-    face.image = faces[name] ?? faces["idle"]
-  }
-
-  private func scheduleNext() {
-    frameTimer?.invalidate()
-    let wait = play[step % play.count].1
-    frameTimer = Timer.scheduledTimer(withTimeInterval: wait, repeats: false) { [weak self] _ in
-      guard let self else { return }
-      self.step += 1
-      self.showStep()
-      self.scheduleNext()
-    }
-    RunLoop.main.add(frameTimer!, forMode: .common)
   }
 
   override func updateTrackingAreas() {

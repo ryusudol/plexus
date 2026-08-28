@@ -1,23 +1,23 @@
 #!/usr/bin/env node
 import http from "node:http";
+import { HOST, PORT } from "../lib/config.ts";
+import { tryParseJson } from "../lib/node.ts";
 
-const PORT = Number(process.env.PORT || 7733);
-const HOST = "127.0.0.1";
 const sourceFlag = process.argv.includes("--source")
   ? process.argv[process.argv.indexOf("--source") + 1]
   : "";
 const provider = sourceFlag === "claude" || sourceFlag === "codex" ? sourceFlag : null;
 
-function readStdin() {
+function readStdin(): Promise<string> {
   return new Promise((resolve) => {
-    const chunks = [];
-    process.stdin.on("data", (c) => chunks.push(c));
+    const chunks: Buffer[] = [];
+    process.stdin.on("data", (c: Buffer) => chunks.push(c));
     process.stdin.on("end", () => resolve(Buffer.concat(chunks).toString("utf8")));
     process.stdin.on("error", () => resolve(""));
   });
 }
 
-function post(body) {
+function post(body: string): Promise<void> {
   return new Promise((resolve) => {
     const req = http.request(
       {
@@ -33,10 +33,10 @@ function post(body) {
       },
       (res) => {
         res.resume();
-        res.on("end", resolve);
+        res.on("end", () => resolve());
       },
     );
-    req.on("error", resolve);
+    req.on("error", () => resolve());
     req.on("timeout", () => {
       req.destroy();
       resolve();
@@ -46,12 +46,8 @@ function post(body) {
 }
 
 const raw = await readStdin();
-let event = {};
-try {
-  event = raw.trim() ? JSON.parse(raw) : {};
-} catch {
-  event = {};
-}
+const parsed = raw.trim() ? tryParseJson<Record<string, unknown>>(raw) : {};
+const event = parsed && typeof parsed === "object" ? parsed : {};
 if (provider) event.provider = provider;
 if (!event.pid && process.ppid) event.pid = process.ppid;
 await post(JSON.stringify(event));

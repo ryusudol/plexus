@@ -1,25 +1,42 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { inferProvider, visitFromAcpRecord } from "../lib/extract.js";
-import { parseClaudeLine, readClaudeSessions } from "./claude.js";
-import { parseCodexLine, readCodexSessions } from "./codex.js";
-import { listAgentPids } from "./procs.js";
+import { LIVE_MS } from "../lib/config.ts";
+import { inferProvider, visitFromAcpRecord } from "../lib/extract.ts";
+import { newestById, pidAlive, readJsonFile, tryParseJson } from "../lib/node.ts";
+import type {
+  FollowMode,
+  HubEvent,
+  LineParse,
+  OrcaFocus,
+  OrcaPane,
+  ParsedVisit,
+  SessionRow,
+  Snapshot,
+  Visit,
+} from "../lib/types.ts";
+import { parseClaudeLine, readClaudeSessions } from "./claude.ts";
+import { parseCodexLine, readCodexSessions } from "./codex.ts";
+import { orcaDataFiles, readOrcaFocus, readOrcaLivePanes } from "./orca.ts";
+import { listAgentPids } from "./procs.ts";
+import { FileTail } from "./tail.ts";
 
-export function grokHome() {
+export { orcaDataFiles, readOrcaActiveCwd, readOrcaFocus, readOrcaLivePanes } from "./orca.ts";
+
+export function grokHome(): string {
   return process.env.GROK_HOME || path.join(os.homedir(), ".grok");
 }
 
-export function encodeCwd(cwd) {
+export function encodeCwd(cwd: string): string {
   return encodeURIComponent(cwd);
 }
 
-export function sessionDir(cwd, sessionId, home = grokHome()) {
+export function sessionDir(cwd: string, sessionId: string, home = grokHome()): string {
   const direct = path.join(home, "sessions", encodeCwd(cwd), sessionId);
   if (fs.existsSync(direct)) return direct;
   const root = path.join(home, "sessions");
   if (!fs.existsSync(root)) return direct;
-  let groups;
+  let groups: fs.Dirent[];
   try {
     groups = fs.readdirSync(root, { withFileTypes: true });
   } catch {
@@ -33,35 +50,27 @@ export function sessionDir(cwd, sessionId, home = grokHome()) {
   return direct;
 }
 
-export function updatesPath(session, home = grokHome()) {
+export function updatesPath(session: SessionRow, home = grokHome()): string {
   if (session?.updates) return session.updates;
   const id = session.nativeId || session.session_id;
   return path.join(sessionDir(session.cwd, id, home), "updates.jsonl");
 }
 
-export function readSummary(session, home = grokHome()) {
+type SessionSummary = {
+  generated_title?: string;
+  agent_name?: string;
+};
+
+export function readSummary(session: SessionRow, home = grokHome()): SessionSummary | null {
   const file = path.join(sessionDir(session.cwd, session.session_id, home), "summary.json");
-  try {
-    return JSON.parse(fs.readFileSync(file, "utf8"));
-  } catch {
-    return null;
-  }
+  const summary = readJsonFile<SessionSummary | null>(file, null);
+  return summary;
 }
 
-function pidAlive(pid) {
-  if (!pid) return false;
-  try {
-    process.kill(pid, 0);
-    return true;
-  } catch {
-    return false;
-  }
-}
-
-function findSessionCwd(sessionId, home = grokHome()) {
+function findSessionCwd(sessionId: string, home = grokHome()): string | null {
   const root = path.join(home, "sessions");
   if (!fs.existsSync(root)) return null;
-  let groups;
+  let groups: fs.Dirent[];
   try {
     groups = fs.readdirSync(root, { withFileTypes: true });
   } catch {
@@ -79,7 +88,7 @@ function findSessionCwd(sessionId, home = grokHome()) {
   return null;
 }
 
-function rosterEntry(row, home, { live = false } = {}) {
+function rosterEntry(row: SessionRow, home: string, { live = false } = {}): SessionRow {
   const summary = readSummary(row, home);
   const updates = updatesPath(row, home);
   let mtime = 0;
@@ -96,62 +105,22 @@ function rosterEntry(row, home, { live = false } = {}) {
     title: summary?.generated_title || path.basename(row.cwd),
     agent: summary?.agent_name || "agent",
     provider: row.provider || "grok",
-    updates: updates,
+    updates,
     mtime,
     live,
   };
 }
 
-function readActiveSessionRows(home) {
-  const file = path.join(home, "active_sessions.json");
-  let rows = [];
-  try {
-    rows = JSON.parse(fs.readFileSync(file, "utf8"));
-  } catch {
-    return [];
-  }
-  return Array.isArray(rows) ? rows.filter((row) => row?.session_id && row.cwd) : [];
+function readActiveSessionRows(home: string): SessionRow[] {
+  const rows = readJsonFile<unknown>(path.join(home, "active_sessions.json"), []);
+  return Array.isArray(rows)
+    ? rows.filter((row): row is SessionRow => Boolean(row?.session_id && row.cwd))
+    : [];
 }
 
-/**
- * Grok sessions currently attached to an open Orca tab.
- * Returns null when Orca state is missing so callers can fall back.
- */
-export function readOrcaLivePanes(file) {
-  const files = file ? [file] : orcaDataFiles();
-  if (!files.length) return null;
-  const panes = new Map();
-  let saw = false;
-  for (const item of files) {
-    try {
-      const obj = JSON.parse(fs.readFileSync(item, "utf8"));
-      const ws = obj?.workspaceSession || {};
-      saw = true;
-      const openTabs = new Set();
-      for (const tabs of Object.values(ws.tabsByWorktree || {})) {
-        if (!Array.isArray(tabs)) continue;
-        for (const tab of tabs) {
-          if (tab?.id) openTabs.add(tab.id);
-        }
-      }
-      for (const pane of Object.values(ws.sleepingAgentSessionsByPaneKey || {})) {
-        const id = pane?.providerSession?.id;
-        if (typeof id !== "string" || !id) continue;
-        if (pane?.tabId && openTabs.size && !openTabs.has(pane.tabId)) continue;
-        const cwd = cwdFromWorktreeId(pane?.worktreeId);
-        const prev = panes.get(id);
-        if (!prev || (cwd && !prev.cwd)) panes.set(id, { sessionId: id, cwd, tabId: pane?.tabId || null });
-      }
-    } catch {
-      // skip unreadable profiles
-    }
-  }
-  return saw ? panes : null;
-}
-
-export function readActiveSessions(home = grokHome(), panes) {
+export function readActiveSessions(home = grokHome(), panes?: Map<string, OrcaPane> | null): SessionRow[] {
   const rows = readActiveSessionRows(home);
-  const byId = new Map();
+  const byId = new Map<string, SessionRow>();
   for (const row of rows) {
     const hostLive = pidAlive(row.pid);
     let mtime = 0;
@@ -160,13 +129,13 @@ export function readActiveSessions(home = grokHome(), panes) {
     } catch {
       mtime = 0;
     }
-    const recent = Date.now() - mtime < 15 * 60 * 1000;
+    const recent = Date.now() - mtime < LIVE_MS;
     byId.set(row.session_id, rosterEntry(row, home, { live: hostLive || recent }));
   }
 
   const livePanes = panes === undefined && home === grokHome() ? readOrcaLivePanes() : panes;
-  const out = [];
-  const seen = new Set();
+  const out: SessionRow[] = [];
+  const seen = new Set<string>();
   if (livePanes) {
     for (const [id, pane] of livePanes) {
       const existing = byId.get(id);
@@ -178,7 +147,7 @@ export function readActiveSessions(home = grokHome(), panes) {
       }
       const cwd = pane?.cwd || findSessionCwd(id, home);
       if (!cwd) continue;
-      out.push(rosterEntry({ session_id: id, cwd, pid: 0, provider: "grok" }, home, { live: true }));
+      out.push(rosterEntry({ session_id: id, cwd, pid: 0, provider: "grok", title: "", agent: "agent", mtime: 0, live: true }, home, { live: true }));
       seen.add(id);
     }
   }
@@ -188,106 +157,29 @@ export function readActiveSessions(home = grokHome(), panes) {
     out.push(session);
     seen.add(session.session_id);
   }
-  out.sort((a, b) => b.mtime - a.mtime);
+  out.sort((a, b) => (b.mtime || 0) - (a.mtime || 0));
   return out;
 }
 
-export function readAllSessions(home = grokHome()) {
-  const grok = readActiveSessions(home);
-  const others = [...readClaudeSessions(), ...readCodexSessions()];
-  const byId = new Map();
-  for (const row of [...grok, ...others]) {
-    const prev = byId.get(row.session_id);
-    if (!prev || row.mtime >= prev.mtime) byId.set(row.session_id, row);
-  }
-  return [...byId.values()].sort((a, b) => b.mtime - a.mtime);
+export function readAllSessions(home = grokHome()): SessionRow[] {
+  return newestById([...readActiveSessions(home), ...readClaudeSessions(), ...readCodexSessions()]);
 }
 
-export function rosterFingerprint(roster) {
+export function rosterFingerprint(roster: SessionRow[] | null | undefined): string {
   return (roster || [])
     .map((s) => `${s.session_id}:${s.pid || 0}:${s.cwd}:${s.title}:${s.live ? 1 : 0}`)
     .join("|");
 }
 
-export function orcaDataFiles() {
-  if (process.env.ORCA_DATA_FILE) return [process.env.ORCA_DATA_FILE];
-  const root = path.join(os.homedir(), "Library/Application Support/orca/profiles");
-  const files = [];
-  try {
-    for (const name of fs.readdirSync(root)) {
-      const candidate = path.join(root, name, "orca-data.json");
-      if (fs.existsSync(candidate)) files.push(candidate);
-    }
-  } catch {
-    // none
-  }
-  return files;
-}
+export type FocusHint = OrcaFocus | string | null | undefined;
 
-function cwdFromWorktreeId(key) {
-  if (typeof key !== "string") return null;
-  const idx = key.indexOf("::");
-  if (idx < 0) return null;
-  return key.slice(idx + 2) || null;
-}
-
-function sessionIdFromOrcaWorkspace(ws = {}) {
-  const worktreeId = ws.activeWorktreeId || "";
-  const tabId =
-    ws.activeTabId ||
-    (worktreeId && ws.activeTabIdByWorktree && ws.activeTabIdByWorktree[worktreeId]) ||
-    null;
-  if (!tabId) return null;
-  const panes = ws.sleepingAgentSessionsByPaneKey || {};
-  const layout = (ws.terminalLayoutsByTabId || {})[tabId] || {};
-  const leafId = layout.activeLeafId;
-  if (leafId) {
-    const pane = panes[`${tabId}:${leafId}`];
-    const id = pane?.providerSession?.id;
-    if (typeof id === "string" && id) return id;
-  }
-  for (const pane of Object.values(panes)) {
-    if (pane?.tabId === tabId && typeof pane?.providerSession?.id === "string") {
-      return pane.providerSession.id;
-    }
-  }
-  return null;
-}
-
-export function readOrcaFocus(file) {
-  const files = file ? [file] : orcaDataFiles();
-  let best = null;
-  let bestM = 0;
-  for (const item of files) {
-    try {
-      const m = fs.statSync(item).mtimeMs;
-      const obj = JSON.parse(fs.readFileSync(item, "utf8"));
-      const ws = obj?.workspaceSession || {};
-      const worktreeId = ws.activeWorktreeId || obj?.ui?.lastActiveWorktreeId || "";
-      const cwd = cwdFromWorktreeId(worktreeId);
-      const sessionId = sessionIdFromOrcaWorkspace(ws);
-      if ((cwd || sessionId) && m >= bestM) {
-        best = { cwd, sessionId };
-        bestM = m;
-      }
-    } catch {
-      // skip
-    }
-  }
-  return best;
-}
-
-export function readOrcaActiveCwd(file) {
-  return readOrcaFocus(file)?.cwd || null;
-}
-
-function focusHint(hint) {
+function focusHint(hint: FocusHint): OrcaFocus {
   if (hint && typeof hint === "object") return hint;
-  if (typeof hint === "string" && hint) return { cwd: hint };
-  return readOrcaFocus() || {};
+  if (typeof hint === "string" && hint) return { cwd: hint, sessionId: null };
+  return readOrcaFocus() || { cwd: null, sessionId: null };
 }
 
-export function pickFocusedSession(roster, hint = readOrcaFocus()) {
+export function pickFocusedSession(roster: SessionRow[] | null | undefined, hint: FocusHint = readOrcaFocus()): SessionRow | null {
   if (!roster?.length) return null;
   const focus = focusHint(hint);
   if (focus.sessionId) {
@@ -300,33 +192,27 @@ export function pickFocusedSession(roster, hint = readOrcaFocus()) {
     const nested = roster.filter((s) => s.cwd === cwd || String(s.cwd).startsWith(`${cwd}/`));
     const pool = exact.length ? exact : nested;
     if (pool.length) {
-      return pool.slice().sort((a, b) => Number(b.live) - Number(a.live) || b.mtime - a.mtime)[0];
+      return pool.slice().sort((a, b) => Number(b.live) - Number(a.live) || (b.mtime || 0) - (a.mtime || 0))[0];
     }
   }
   return null;
 }
 
-export function parseAcpLine(line, session) {
-  let record;
-  try {
-    record = JSON.parse(line);
-  } catch {
-    return null;
-  }
+export function parseAcpLine(line: string, session: SessionRow | { session_id?: string; cwd?: string; label?: string }): ParsedVisit | null {
+  const record = tryParseJson(line);
+  if (record == null) return null;
   return visitFromAcpRecord(record, session);
 }
 
-function sessionUpdateOf(line) {
-  let record;
-  try {
-    record = JSON.parse(line);
-  } catch {
-    return null;
-  }
-  return record?.params?.update || record?.update || null;
+function sessionUpdateOf(line: string): Record<string, unknown> | null {
+  const record = tryParseJson<Record<string, unknown>>(line);
+  if (!record) return null;
+  const params = record.params && typeof record.params === "object" ? (record.params as Record<string, unknown>) : null;
+  const update = params?.update || record.update || null;
+  return update && typeof update === "object" ? (update as Record<string, unknown>) : null;
 }
 
-export function isUserPromptEvent(line) {
+export function isUserPromptEvent(line: string): boolean {
   const update = sessionUpdateOf(line);
   if (!update) return false;
   const kind = update.sessionUpdate;
@@ -338,7 +224,7 @@ export function isUserPromptEvent(line) {
   );
 }
 
-export function parseSessionEvent(line) {
+export function parseSessionEvent(line: string): "busy" | "idle" | null {
   const update = sessionUpdateOf(line);
   if (!update) return null;
   const kind = update.sessionUpdate;
@@ -365,84 +251,33 @@ export function parseSessionEvent(line) {
   return null;
 }
 
-class FileTail {
-  constructor(filePath, onLine) {
-    this.filePath = filePath;
-    this.onLine = onLine;
-    this.offset = 0;
-    this.buf = "";
-    this.watcher = null;
-  }
-
-  replay() {
-    this.offset = 0;
-    this.buf = "";
-    this.readNew();
-  }
-
-  readNew() {
-    let st;
-    try {
-      st = fs.statSync(this.filePath);
-    } catch {
-      return;
-    }
-    if (st.size < this.offset) {
-      this.offset = 0;
-      this.buf = "";
-    }
-    if (st.size === this.offset) return;
-    const length = st.size - this.offset;
-    const buffer = Buffer.alloc(length);
-    const fd = fs.openSync(this.filePath, "r");
-    fs.readSync(fd, buffer, 0, length, this.offset);
-    fs.closeSync(fd);
-    this.offset = st.size;
-    this.buf += buffer.toString("utf8");
-    const parts = this.buf.split("\n");
-    this.buf = parts.pop() ?? "";
-    for (const line of parts) {
-      if (line.trim()) this.onLine(line);
-    }
-  }
-
-  start() {
-    this.stop();
-    try {
-      this.watcher = fs.watch(this.filePath, () => this.readNew());
-    } catch {
-      this.watcher = null;
-    }
-  }
-
-  stop() {
-    this.watcher?.close();
-    this.watcher = null;
-  }
-}
-
 export class SessionHub {
-  constructor({ home = grokHome(), emit } = {}) {
+  home: string;
+  emit: (event: HubEvent) => void;
+  selectedId: string | null = null;
+  tails = new Map<string, FileTail>();
+  seen = new Map<string, Set<string>>();
+  visits = new Map<string, string[]>();
+  files = new Map<string, string[]>();
+  lastFolder = new Map<string, string>();
+  lastFile = new Map<string, string>();
+  busy = new Map<string, boolean>();
+  roster: SessionRow[] = [];
+  rosterWatcher: fs.FSWatcher | null = null;
+  orcaWatchers: fs.FSWatcher[] = [];
+  poll: ReturnType<typeof setInterval> | null = null;
+  refreshTimer: ReturnType<typeof setTimeout> | null = null;
+  fingerprint = "";
+  followMode: FollowMode = "focus";
+  lastFocusedId: string | null = null;
+  hooked = new Map<string, SessionRow>();
+
+  constructor({ home = grokHome(), emit }: { home?: string; emit?: (event: HubEvent) => void } = {}) {
     this.home = home;
     this.emit = emit || (() => {});
-    this.selectedId = null;
-    this.tails = new Map();
-    this.seen = new Map();
-    this.visits = new Map();
-    this.lastFolder = new Map();
-    this.busy = new Map();
-    this.roster = [];
-    this.rosterWatcher = null;
-    this.orcaWatchers = [];
-    this.poll = null;
-    this.refreshTimer = null;
-    this.fingerprint = "";
-    this.followMode = "focus";
-    this.lastFocusedId = null;
-    this.hooked = new Map();
   }
 
-  snapshot() {
+  snapshot(): Snapshot {
     this.scanRoster();
     const roster = this.roster;
     if (!roster.length) {
@@ -453,6 +288,7 @@ export class SessionHub {
         root: null,
         agents: [],
         visited: [],
+        files: [],
         busy: false,
         pids: [],
       };
@@ -461,57 +297,73 @@ export class SessionHub {
       this.selectedId = roster[0].session_id;
     }
     const selected = roster.find((s) => s.session_id === this.selectedId) || roster[0];
-    const peers = roster.filter((s) => s.cwd === selected.cwd);
-    const visited = [];
-    const seenFolders = new Set();
-    const underRoot = (folder) =>
+    const underRoot = (folder: string) =>
       folder === selected.cwd || String(folder).startsWith(`${selected.cwd}/`);
-    for (const session of peers) {
+    const visited: string[] = [];
+    const seenFolders = new Set<string>();
+    const files: string[] = [];
+    const seenFiles = new Set<string>();
+    for (const session of roster) {
       const list = this.visits.get(session.session_id) || [];
       for (const folder of list) {
         if (!underRoot(folder) || seenFolders.has(folder)) continue;
         seenFolders.add(folder);
         visited.push(folder);
       }
+      for (const file of this.files.get(session.session_id) || []) {
+        if (!underRoot(file) || seenFiles.has(file)) continue;
+        seenFiles.add(file);
+        files.push(file);
+      }
     }
     const last = this.lastFolder.get(selected.session_id);
+    const lastFile = this.lastFile.get(selected.session_id);
     const folderPath = last && underRoot(last) ? last : selected.cwd;
+    const filePath = lastFile && underRoot(lastFile) ? lastFile : null;
     const agents = [
       {
         id: selected.session_id,
         label: selected.agent === "grok-build-plan" ? "plan" : selected.agent || "agent",
-        title: selected.title,
+        title: selected.title || "",
         folderPath,
+        filePath,
       },
     ];
     return {
       sessions: roster.map((s) => ({
         id: s.session_id,
-        title: s.title,
+        title: s.title || "",
         cwd: s.cwd,
-        live: s.live,
+        live: Boolean(s.live),
         provider: s.provider || "grok",
         selected: s.session_id === selected.session_id,
       })),
       sessionId: selected.session_id,
-      sessionTitle: selected.title,
+      sessionTitle: selected.title || null,
       root: selected.cwd,
       agents,
-      visited: visited.slice(-40),
-      busy: peers.some((s) => this.busy.get(s.session_id)),
-      pids: [...new Set([...roster.map((s) => s.pid).filter(Boolean), ...listAgentPids()])],
+      visited,
+      files,
+      busy: roster.some(
+        (s) =>
+          this.busy.get(s.session_id) &&
+          (s.cwd === selected.cwd ||
+            String(s.cwd).startsWith(`${selected.cwd}/`) ||
+            selected.cwd.startsWith(`${s.cwd}/`)),
+      ),
+      pids: [...new Set([...roster.map((s) => s.pid).filter((pid): pid is number => Boolean(pid)), ...listAgentPids()])],
       followMode: this.followMode === "project" ? "project" : "focus",
     };
   }
 
-  select(sessionId) {
+  select(sessionId: string): void {
     this.selectedId = sessionId;
     this.syncTails();
     this.emit({ type: "snapshot", ...this.snapshot() });
     this.emitActivity();
   }
 
-  sessionStillLive(id = this.selectedId) {
+  sessionStillLive(id = this.selectedId): boolean {
     return Boolean(id && this.roster.some((s) => s.session_id === id));
   }
 
@@ -519,14 +371,23 @@ export class SessionHub {
    * Jump to a session that just received a user prompt.
    * Picker / project follow stay put until that happens.
    */
-  noteHook(event) {
+  noteHook(event: Record<string, unknown>): void {
     const provider = inferProvider(event);
-    const native = event.session_id || event.sessionId;
+    const native = (typeof event.session_id === "string" && event.session_id) ||
+      (typeof event.sessionId === "string" && event.sessionId) ||
+      "";
     if (!native) return;
     const id = provider === "grok" ? native : `${provider}:${native}`;
-    const cwd = event.cwd || event.workspace_root || event.workspaceRoot;
-    const updates = event.transcript_path || event.transcriptPath || "";
-    const prev = this.hooked.get(id) || {};
+    const cwd =
+      (typeof event.cwd === "string" && event.cwd) ||
+      (typeof event.workspace_root === "string" && event.workspace_root) ||
+      (typeof event.workspaceRoot === "string" && event.workspaceRoot) ||
+      "";
+    const updates =
+      (typeof event.transcript_path === "string" && event.transcript_path) ||
+      (typeof event.transcriptPath === "string" && event.transcriptPath) ||
+      "";
+    const prev = this.hooked.get(id) || ({} as Partial<SessionRow>);
     if (cwd) {
       this.hooked.set(id, {
         session_id: id,
@@ -542,18 +403,18 @@ export class SessionHub {
       });
     }
     const hook = event.hook_event_name || event.hookEventName || event.type || "";
-    if (/UserPromptSubmit|user_prompt_submit|user_message/i.test(hook)) {
+    if (/UserPromptSubmit|user_prompt_submit|user_message/i.test(String(hook))) {
       this.busy.set(id, true);
       const row = this.hooked.get(id) || this.roster.find((s) => s.session_id === id);
       if (row) this.followPrompt(row);
-    } else if (/PreToolUse|pre_tool_use|tool_call/i.test(hook)) {
+    } else if (/PreToolUse|pre_tool_use|tool_call/i.test(String(hook))) {
       this.busy.set(id, true);
     } else if (/^(Stop|StopFailure|stop)/i.test(String(hook))) {
       this.busy.set(id, false);
     }
   }
 
-  followPrompt(session) {
+  followPrompt(session: { session_id?: string; cwd?: string } | null | undefined): boolean {
     if (this.followMode === "project") return false;
     const id = session?.session_id;
     if (!id || id === this.selectedId) return false;
@@ -563,7 +424,7 @@ export class SessionHub {
     return true;
   }
 
-  start() {
+  start(): void {
     this.refresh({ force: true });
     try {
       this.rosterWatcher = fs.watch(path.join(this.home, "active_sessions.json"), () => {
@@ -596,7 +457,7 @@ export class SessionHub {
     this.poll.unref?.();
   }
 
-  stop() {
+  stop(): void {
     this.rosterWatcher?.close();
     for (const watcher of this.orcaWatchers) watcher.close();
     this.orcaWatchers = [];
@@ -606,7 +467,7 @@ export class SessionHub {
     this.tails.clear();
   }
 
-  scheduleRefresh() {
+  scheduleRefresh(): void {
     if (this.refreshTimer) return;
     this.refreshTimer = setTimeout(() => {
       this.refreshTimer = null;
@@ -614,12 +475,12 @@ export class SessionHub {
     }, 120);
   }
 
-  scanRoster() {
+  scanRoster(): void {
     const listed = readAllSessions(this.home);
     const byId = new Map(listed.map((row) => [row.session_id, row]));
     const now = Date.now();
     for (const [id, row] of this.hooked) {
-      if (now - row.mtime > 15 * 60 * 1000) {
+      if (now - (row.mtime || 0) > LIVE_MS) {
         this.hooked.delete(id);
         continue;
       }
@@ -632,10 +493,10 @@ export class SessionHub {
         byId.set(id, row);
       }
     }
-    this.roster = [...byId.values()].sort((a, b) => b.mtime - a.mtime);
+    this.roster = [...byId.values()].sort((a, b) => (b.mtime || 0) - (a.mtime || 0));
   }
 
-  followFocus(hint = readOrcaFocus()) {
+  followFocus(hint: FocusHint = readOrcaFocus()): boolean {
     if (this.followMode === "project") return false;
     const focused = pickFocusedSession(this.roster, hint);
     const focusedId = focused?.session_id || null;
@@ -655,7 +516,7 @@ export class SessionHub {
     return true;
   }
 
-  refresh({ force = false } = {}) {
+  refresh({ force = false } = {}): void {
     this.scanRoster();
     const fingerprint = rosterFingerprint(this.roster);
     const rosterChanged = fingerprint !== this.fingerprint;
@@ -668,7 +529,7 @@ export class SessionHub {
     }
   }
 
-  syncTails() {
+  syncTails(): void {
     const liveIds = new Set(this.roster.map((s) => s.session_id));
     for (const [id, tail] of this.tails) {
       if (!liveIds.has(id)) {
@@ -682,9 +543,10 @@ export class SessionHub {
       if (this.tails.has(session.session_id)) continue;
       const file = updatesPath(session, this.home);
       if (!fs.existsSync(file)) continue;
-      const seen = new Set();
+      const seen = new Set<string>();
       this.seen.set(session.session_id, seen);
       this.visits.set(session.session_id, []);
+      this.files.set(session.session_id, []);
       const gate = { live: false };
       const tail = new FileTail(file, (line) => this.onLine(session, line, seen, gate.live));
       tail.replay();
@@ -702,14 +564,19 @@ export class SessionHub {
     this.emitActivity();
   }
 
-  emitActivity() {
+  emitActivity(): void {
     const selected = this.roster.find((s) => s.session_id === this.selectedId) || this.roster[0];
     if (!selected) {
       this.emit({ type: "activity", active: false, sessionId: null });
       return;
     }
-    const peers = this.roster.filter((s) => s.cwd === selected.cwd);
-    const active = peers.some((s) => this.busy.get(s.session_id));
+    const active = this.roster.some(
+      (s) =>
+        this.busy.get(s.session_id) &&
+        (s.cwd === selected.cwd ||
+          String(s.cwd).startsWith(`${selected.cwd}/`) ||
+          selected.cwd.startsWith(`${s.cwd}/`)),
+    );
     this.emit({
       type: "activity",
       active,
@@ -718,7 +585,7 @@ export class SessionHub {
     });
   }
 
-  interpretLine(session, line) {
+  interpretLine(session: SessionRow, line: string): LineParse {
     if (session.provider === "claude") return parseClaudeLine(line, session);
     if (session.provider === "codex") return parseCodexLine(line, session);
     const activity = parseSessionEvent(line);
@@ -727,7 +594,7 @@ export class SessionHub {
     return { visits: parsed ? [parsed] : [], activity, prompt };
   }
 
-  onLine(session, line, seen, live) {
+  onLine(session: SessionRow, line: string, seen: Set<string>, live: boolean): void {
     const { visits, activity, prompt } = this.interpretLine(session, line);
     if (activity) {
       this.busy.set(session.session_id, activity === "busy");
@@ -738,13 +605,26 @@ export class SessionHub {
       if (parsed.toolCallId && seen.has(parsed.toolCallId)) continue;
       if (parsed.toolCallId) seen.add(parsed.toolCallId);
       const folder = parsed.visit.folderPath;
+      if (!folder) continue;
       const list = this.visits.get(session.session_id) || [];
       if (!list.includes(folder)) list.push(folder);
       this.visits.set(session.session_id, list);
       this.lastFolder.set(session.session_id, folder);
+      const file = parsed.visit.filePath;
+      if (file) {
+        const fileList = this.files.get(session.session_id) || [];
+        if (!fileList.includes(file)) fileList.push(file);
+        this.files.set(session.session_id, fileList);
+        this.lastFile.set(session.session_id, file);
+      } else {
+        this.lastFile.delete(session.session_id);
+      }
       if (!live) continue;
       const selected = this.roster.find((s) => s.session_id === this.selectedId);
-      if (selected && session.cwd !== selected.cwd) continue;
+      const loc = file || folder;
+      if (selected && loc !== selected.cwd && !String(loc).startsWith(`${selected.cwd}/`)) {
+        continue;
+      }
       this.emit({
         type: "visit",
         agentId: session.session_id,
@@ -759,13 +639,13 @@ export class SessionHub {
   }
 }
 
-export function replaySession(session, home = grokHome()) {
+export function replaySession(session: SessionRow, home = grokHome()): Visit[] {
   const file = updatesPath(session, home);
-  const seen = new Set();
-  const visits = [];
+  const seen = new Set<string>();
+  const visits: Visit[] = [];
   if (!fs.existsSync(file)) return visits;
   const text = fs.readFileSync(file, "utf8");
-  const interpret = (line) => {
+  const interpret = (line: string): ParsedVisit[] => {
     if (session.provider === "claude") return parseClaudeLine(line, session).visits;
     if (session.provider === "codex") return parseCodexLine(line, session).visits;
     const parsed = parseAcpLine(line, session);

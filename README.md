@@ -22,11 +22,11 @@ That starts a menu-bar extra (no Dock icon). The floating panel appears when tha
 |---|---|
 | Menu bar → Show Window | Open the HUD |
 | Esc | Hide |
-| `node bin/plexus.js toggle` | Show / hide |
-| `node bin/plexus.js quit` | Stop HUD + backend |
+| `node bin/plexus.ts toggle` | Show / hide |
+| `node bin/plexus.ts quit` | Stop HUD + backend |
 | Menu bar → Walk Demo | Fake wide repo, no agent required |
 
-`SessionStart` runs `bin/plexus.js --ensure` so the HUD process is ready, still hidden, until that session actually starts working.
+`SessionStart` runs `bin/plexus.ts --ensure` so the HUD process is ready, still hidden, until that session actually starts working. Requires Node 22.6+ (type stripping).
 
 ## Notes
 

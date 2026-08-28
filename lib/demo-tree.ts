@@ -1,4 +1,12 @@
-function add(nodes, id, name, parentId) {
+import type { TreeNode } from "./types.ts";
+
+function add(
+  nodes: Map<string, TreeNode>,
+  id: string,
+  name: string,
+  parentId: string | null,
+  kind: "folder" | "file" = "folder",
+) {
   nodes.set(id, {
     id,
     name,
@@ -6,9 +14,12 @@ function add(nodes, id, name, parentId) {
     parentId,
     childIds: [],
     hasChildren: false,
+    childrenLoaded: kind === "file",
+    kind,
   });
   if (parentId) {
     const parent = nodes.get(parentId);
+    if (!parent) return;
     parent.childIds.push(id);
     parent.hasChildren = true;
   }
@@ -17,8 +28,8 @@ function add(nodes, id, name, parentId) {
 /**
  * A wide, nested folder tree used to show auto-fold without scanning a huge repo.
  */
-export function buildShowcaseTree() {
-  const nodes = new Map();
+export function buildShowcaseTree(): { rootId: string; nodes: Map<string, TreeNode> } {
+  const nodes = new Map<string, TreeNode>();
   add(nodes, "root", "acme", null);
 
   const packages = [
@@ -61,11 +72,15 @@ export function buildShowcaseTree() {
   for (const screen of screens) {
     add(nodes, `${webSrc}/${screen}`, screen, webSrc);
   }
+  add(nodes, `${webSrc}/agents/index.ts`, "index.ts", `${webSrc}/agents`, "file");
+  add(nodes, `${webSrc}/session/store.ts`, "store.ts", `${webSrc}/session`, "file");
+  add(nodes, `${webSrc}/editor/canvas.ts`, "canvas.ts", `${webSrc}/editor`, "file");
 
   const apiSrc = "root/api/src";
   for (const name of ["routes", "auth", "db", "jobs", "models", "hooks"]) {
     add(nodes, `${apiSrc}/${name}`, name, apiSrc);
   }
+  add(nodes, `${apiSrc}/hooks/plexus.ts`, "plexus.ts", `${apiSrc}/hooks`, "file");
 
   const mlSrc = "root/ml/src";
   for (const name of ["train", "eval", "features", "dataflow"]) {
@@ -75,20 +90,24 @@ export function buildShowcaseTree() {
   return { rootId: "root", nodes };
 }
 
-export function showcaseWalk() {
+export function showcaseWalk(): string[] {
   return [
     "root/web",
     "root/web/src",
     "root/web/src/agents",
+    "root/web/src/agents/index.ts",
     "root/web/src/session",
+    "root/web/src/session/store.ts",
     "root/api",
     "root/api/src",
     "root/api/src/hooks",
+    "root/api/src/hooks/plexus.ts",
     "root/ml",
     "root/ml/src",
     "root/ml/src/eval",
     "root/docs",
     "root/web/src/editor",
+    "root/web/src/editor/canvas.ts",
     "root/cli",
     "root/cli/src",
   ];

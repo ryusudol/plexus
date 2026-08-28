@@ -1,139 +1,56 @@
-export const NODE_W = 108;
-export const NODE_H = 28;
-export const GAP_X = 18;
-export const GAP_Y = 72;
+export type Point = { x: number; y: number };
+export type Camera = { x: number; y: number; k: number };
+export type ViewSize = { w: number; h: number };
+export type Bounds = { minX: number; minY: number; maxX: number; maxY: number };
+export type TrailMode = "tree" | "circle";
 
-export function measureWidth(rootId, getShownChildren, nodeW = NODE_W, gapX = GAP_X) {
-  function walk(id) {
-    const kids = getShownChildren(id) || [];
-    if (!kids.length) return nodeW;
-    const inner =
-      kids.reduce((sum, child) => sum + walk(child), 0) + gapX * Math.max(0, kids.length - 1);
-    return Math.max(nodeW, inner);
-  }
-  return walk(rootId);
-}
+export type NodePos = {
+  x: number;
+  y: number;
+  w: number;
+  h: number;
+  angle?: number;
+  depth?: number;
+  subtreeW?: number;
+};
 
-function pathSet(pinnedIds, parentOf) {
-  const onPath = new Set();
-  for (const pinned of pinnedIds) {
-    let cursor = pinned;
-    const guard = new Set();
-    while (cursor && !guard.has(cursor)) {
-      onPath.add(cursor);
-      guard.add(cursor);
-      cursor = parentOf.get(cursor) ?? null;
-    }
-  }
-  return onPath;
-}
+export type LayoutEdge = {
+  from: string;
+  to: string;
+  x1: number;
+  y1: number;
+  x2: number;
+  y2: number;
+};
 
-function oldestExpandable(expanded, onPath, lastFocus, rootId) {
-  const candidates = [];
-  for (const id of expanded) {
-    if (id === rootId) continue;
-    if (onPath.has(id)) continue;
-    candidates.push(id);
-  }
-  candidates.sort((a, b) => {
-    const fa = lastFocus.get(a) || 0;
-    const fb = lastFocus.get(b) || 0;
-    if (fa !== fb) return fa - fb;
-    return String(a).localeCompare(String(b));
-  });
-  return candidates;
-}
+export type GraphLayout = {
+  pos: Map<string, NodePos>;
+  edges: LayoutEdge[];
+  width: number;
+  height: number;
+  size: Map<string, { w: number; h: number } | NodePos>;
+};
 
-/**
- * Keep the diagram within maxWidth by folding stale branches, then hiding
- * extra siblings behind overflow. Nodes on an agent/user pin path stay visible.
- */
-export function fitToWidth({
-  rootId,
-  expanded,
-  getAllChildIds,
-  parentOf,
-  pinnedIds,
-  lastFocus = new Map(),
-  maxWidth,
-  nodeW = NODE_W,
-  gapX = GAP_X,
-}) {
-  const exp = new Set(expanded);
-  const hidden = new Map();
-  const onPath = pathSet(pinnedIds, parentOf);
+export type ShownChildren = (id: string) => string[] | undefined | null;
 
-  const shownOf = (id) => {
-    if (!exp.has(id)) return [];
-    const hide = hidden.get(id);
-    const kids = getAllChildIds(id) || [];
-    if (!hide || hide.size === 0) return kids.slice();
-    return kids.filter((child) => !hide.has(child));
-  };
-
-  const width = () => measureWidth(rootId, shownOf, nodeW, gapX);
-
-  for (const id of oldestExpandable(exp, onPath, lastFocus, rootId)) {
-    if (width() <= maxWidth) break;
-    exp.delete(id);
-  }
-
-  const hideOne = () => {
-    let best = null;
-    const visit = (id) => {
-      if (!exp.has(id)) return;
-      const kids = shownOf(id);
-      const unpinned = kids.filter((child) => !onPath.has(child));
-      if (unpinned.length && (!best || unpinned.length > best.unpinned.length)) {
-        best = { id, unpinned };
-      }
-      for (const child of kids) visit(child);
-    };
-    visit(rootId);
-    if (!best) return false;
-    const victim = best.unpinned[best.unpinned.length - 1];
-    if (!hidden.has(best.id)) hidden.set(best.id, new Set());
-    hidden.get(best.id).add(victim);
-    return true;
-  };
-
-  let guard = 0;
-  while (width() > maxWidth && guard < 400) {
-    if (!hideOne()) break;
-    guard += 1;
-  }
-
-  const shown = new Map();
-  const collect = (id) => {
-    const kids = shownOf(id);
-    shown.set(id, kids);
-    if (exp.has(id)) {
-      for (const child of kids) collect(child);
-    }
-  };
-  collect(rootId);
-
-  return { expanded: exp, hidden, shown, onPath, width: width() };
-}
-
-function coneSpan(n) {
+function coneSpan(n: number): number {
   if (n <= 1) return 0;
   return Math.min(1.22, 0.36 + 0.11 * (n - 1));
 }
 
-function coneRadius(n) {
+function coneRadius(n: number): number {
   if (n <= 1) return 62;
   return 62 + Math.min(28, (n - 2) * 4);
 }
 
-function ringRadius(depth) {
+function ringRadius(depth: number): number {
   if (depth <= 0) return 0;
   return 70 + (depth - 1) * 66;
 }
 
-function finishLayout(pos, rootId, getShownChildren) {
-  const edges = [];
-  function walk(id) {
+function finishLayout(pos: Map<string, NodePos>, rootId: string, getShownChildren: ShownChildren): GraphLayout {
+  const edges: LayoutEdge[] = [];
+  function walk(id: string) {
     const parent = pos.get(id);
     for (const child of getShownChildren(id) || []) {
       const c = pos.get(child);
@@ -170,14 +87,14 @@ function finishLayout(pos, rootId, getShownChildren) {
   };
 }
 
-function wrapAngle(a) {
+function wrapAngle(a: number): number {
   let x = a;
   while (x > Math.PI) x -= Math.PI * 2;
   while (x < -Math.PI) x += Math.PI * 2;
   return x;
 }
 
-function largestGapAngle(angles) {
+function largestGapAngle(angles: number[]): number {
   if (!angles.length) return Math.PI / 2;
   const sorted = angles.slice().sort((a, b) => a - b);
   let bestGap = -1;
@@ -197,9 +114,12 @@ function largestGapAngle(angles) {
 export function layoutRadial({
   rootId,
   getShownChildren,
-}) {
-  const leafCount = new Map();
-  function count(id) {
+}: {
+  rootId: string;
+  getShownChildren: ShownChildren;
+}): GraphLayout {
+  const leafCount = new Map<string, number>();
+  function count(id: string): number {
     const kids = getShownChildren(id) || [];
     const n = kids.length ? kids.reduce((sum, child) => sum + count(child), 0) : 1;
     leafCount.set(id, n);
@@ -207,8 +127,8 @@ export function layoutRadial({
   }
   count(rootId);
 
-  const pos = new Map();
-  function place(id, x, y, heading, depth) {
+  const pos = new Map<string, NodePos>();
+  function place(id: string, x: number, y: number, heading: number, depth: number) {
     pos.set(id, {
       x,
       y,
@@ -247,9 +167,12 @@ export function layoutRadial({
  * Concentric circular map: root in the center, each depth on a ring.
  * A lone chain stays on the downward ray so a Tree → Circle morph is small.
  */
-export function layoutCircular({ rootId, getShownChildren }) {
-  const leafCount = new Map();
-  function count(id) {
+export function layoutCircular({ rootId, getShownChildren }: {
+  rootId: string;
+  getShownChildren: ShownChildren;
+}): GraphLayout {
+  const leafCount = new Map<string, number>();
+  function count(id: string): number {
     const kids = getShownChildren(id) || [];
     const n = kids.length ? kids.reduce((sum, child) => sum + count(child), 0) : 1;
     leafCount.set(id, n);
@@ -257,8 +180,8 @@ export function layoutCircular({ rootId, getShownChildren }) {
   }
   count(rootId);
 
-  const pos = new Map();
-  function place(id, a0, a1, depth) {
+  const pos = new Map<string, NodePos>();
+  function place(id: string, a0: number, a1: number, depth: number) {
     const mid = (a0 + a1) / 2;
     const r = ringRadius(depth);
     pos.set(id, {
@@ -284,18 +207,26 @@ export function layoutCircular({ rootId, getShownChildren }) {
   return finishLayout(pos, rootId, getShownChildren);
 }
 
-export function layoutTrail({ mode = "tree", rootId, getShownChildren }) {
+export function layoutTrail({
+  mode = "tree",
+  rootId,
+  getShownChildren,
+}: {
+  mode?: TrailMode | string;
+  rootId: string;
+  getShownChildren: ShownChildren;
+}): GraphLayout {
   if (mode === "circle") return layoutCircular({ rootId, getShownChildren });
   return layoutRadial({ rootId, getShownChildren });
 }
 
-function attachOnCircle(parentPos, siblingPositions) {
+function attachOnCircle(parentPos: NodePos, siblingPositions: NodePos[]): NodePos {
   const depth = (parentPos.depth || 0) + 1;
   const r = siblingPositions.length
     ? siblingPositions.reduce((sum, p) => sum + Math.hypot(p.x, p.y), 0) /
       siblingPositions.length
     : ringRadius(depth);
-  let angle;
+  let angle: number;
   if (!siblingPositions.length) {
     angle = parentPos.angle ?? Math.PI / 2;
   } else if ((parentPos.depth || 0) === 0) {
@@ -321,7 +252,11 @@ function attachOnCircle(parentPos, siblingPositions) {
  * Place one new child without moving siblings already on the map.
  * `mode: "circle"` parks the child on the depth ring around the origin.
  */
-export function attachChild(parentPos, siblingPositions = [], { mode = "tree" } = {}) {
+export function attachChild(
+  parentPos: NodePos,
+  siblingPositions: NodePos[] = [],
+  { mode = "tree" }: { mode?: TrailMode | string } = {},
+): NodePos {
   if (mode === "circle") return attachOnCircle(parentPos, siblingPositions);
   const heading0 = parentPos.angle ?? Math.PI / 2;
   if (!siblingPositions.length) {
@@ -359,8 +294,18 @@ export function attachChild(parentPos, siblingPositions = [], { mode = "tree" } 
  * Minimal camera pan so `points` stay inside the padded view.
  * Never changes zoom, never recenters on the whole graph.
  */
-export function cameraPanToInclude({ points, view, camera, pad = 64 }) {
-  const pts = (points || []).filter((p) => p && Number.isFinite(p.x) && Number.isFinite(p.y));
+export function cameraPanToInclude({
+  points,
+  view,
+  camera,
+  pad = 64,
+}: {
+  points?: Array<Point | null | undefined>;
+  view?: Partial<ViewSize> | null;
+  camera: Camera;
+  pad?: number;
+}): Camera | null {
+  const pts = (points || []).filter((p): p is Point => p != null && Number.isFinite(p.x) && Number.isFinite(p.y));
   if (!pts.length) return null;
   const w = view?.w || 0;
   const h = view?.h || 0;
@@ -368,7 +313,7 @@ export function cameraPanToInclude({ points, view, camera, pad = 64 }) {
   const x = camera.x;
   const y = camera.y;
   const k = camera.k;
-  const toView = (p) => ({ vx: p.x * k + x, vy: p.y * k + y });
+  const toView = (p: Point) => ({ vx: p.x * k + x, vy: p.y * k + y });
 
   let needLeft = 0;
   let needRight = 0;
@@ -409,7 +354,17 @@ export function cameraPanToInclude({ points, view, camera, pad = 64 }) {
  * Keep at least `margin` pixels of the graph bbox overlapping the view,
  * so the camera cannot wander into empty space.
  */
-export function clampCameraToGraph({ bounds, view, camera, margin = 72 }) {
+export function clampCameraToGraph({
+  bounds,
+  view,
+  camera,
+  margin = 72,
+}: {
+  bounds?: Bounds | null;
+  view?: Partial<ViewSize> | null;
+  camera?: Camera | null;
+  margin?: number;
+}): Camera | null | undefined {
   if (!bounds || !view || !camera) return camera;
   const w = view.w || 0;
   const h = view.h || 0;
@@ -432,7 +387,19 @@ export function clampCameraToGraph({ bounds, view, camera, margin = 72 }) {
  * Left/right (and top/bottom) insets stay equal — extra pad on one side
  * would park the graph off-center.
  */
-export function fitCameraToBounds({ bounds, view, pad = 22, minK = 0.22, maxK = 1.7 }) {
+export function fitCameraToBounds({
+  bounds,
+  view,
+  pad = 22,
+  minK = 0.22,
+  maxK = 1.7,
+}: {
+  bounds?: Bounds | null;
+  view?: Partial<ViewSize> | null;
+  pad?: number;
+  minK?: number;
+  maxK?: number;
+}): Camera | null {
   const w = view?.w || 0;
   const h = view?.h || 0;
   if (w < 80 || h < 80 || !bounds) return null;
@@ -449,86 +416,7 @@ export function fitCameraToBounds({ bounds, view, pad = 22, minK = 0.22, maxK = 
   };
 }
 
-export function layoutTree({
-  rootId,
-  getShownChildren,
-  nodeW = NODE_W,
-  nodeH = NODE_H,
-  gapX = GAP_X,
-  gapY = GAP_Y,
-  maxWidth,
-}) {
-  const size = new Map();
-
-  function measure(id) {
-    const kids = getShownChildren(id) || [];
-    if (!kids.length) {
-      const leaf = { w: nodeW, h: nodeH };
-      size.set(id, leaf);
-      return leaf;
-    }
-    const measured = kids.map(measure);
-    const w = Math.max(
-      nodeW,
-      measured.reduce((sum, item) => sum + item.w, 0) + gapX * (kids.length - 1),
-    );
-    const h = nodeH + gapY + Math.max(...measured.map((item) => item.h));
-    const box = { w, h };
-    size.set(id, box);
-    return box;
-  }
-
-  const rootSize = measure(rootId);
-  const pos = new Map();
-
-  function place(id, xLeft, y) {
-    const box = size.get(id);
-    const cx = xLeft + box.w / 2;
-    pos.set(id, { x: cx, y, w: nodeW, h: nodeH, subtreeW: box.w });
-    const kids = getShownChildren(id) || [];
-    if (!kids.length) return;
-    const inner =
-      kids.reduce((sum, child) => sum + size.get(child).w, 0) + gapX * (kids.length - 1);
-    let x = xLeft + (box.w - inner) / 2;
-    for (const child of kids) {
-      place(child, x, y + nodeH + gapY);
-      x += size.get(child).w + gapX;
-    }
-  }
-
-  const totalW = Math.max(rootSize.w, maxWidth || 0);
-  const x0 = (totalW - rootSize.w) / 2;
-  place(rootId, x0, 48);
-
-  const edges = [];
-  function walkEdges(id) {
-    const parent = pos.get(id);
-    const kids = getShownChildren(id) || [];
-    for (const child of kids) {
-      const c = pos.get(child);
-      edges.push({
-        from: id,
-        to: child,
-        x1: parent.x,
-        y1: parent.y + nodeH / 2,
-        x2: c.x,
-        y2: c.y - nodeH / 2,
-      });
-      walkEdges(child);
-    }
-  }
-  walkEdges(rootId);
-
-  return {
-    pos,
-    edges,
-    width: totalW,
-    height: rootSize.h + 96,
-    size,
-  };
-}
-
-export function edgePath(x1, y1, x2, y2) {
+export function edgePath(x1: number, y1: number, x2: number, y2: number): string {
   const dx = x2 - x1;
   const dy = y2 - y1;
   const dist = Math.hypot(dx, dy) || 1;
@@ -545,11 +433,15 @@ export function edgePath(x1, y1, x2, y2) {
   return `M ${x1.toFixed(1)} ${y1.toFixed(1)} C ${c1x.toFixed(1)} ${c1y.toFixed(1)}, ${c2x.toFixed(1)} ${c2y.toFixed(1)}, ${x2.toFixed(1)} ${y2.toFixed(1)}`;
 }
 
-export function hopsBetween(fromId, toId, parentOf) {
+export function hopsBetween(
+  fromId: string,
+  toId: string,
+  parentOf: Map<string, string | null | undefined>,
+): string[] {
   if (fromId === toId) return [];
-  const up = [];
-  const fromAncestors = new Map();
-  let cursor = fromId;
+  const up: string[] = [];
+  const fromAncestors = new Map<string, number>();
+  let cursor: string | null | undefined = fromId;
   let depth = 0;
   while (cursor) {
     fromAncestors.set(cursor, depth);
@@ -558,7 +450,7 @@ export function hopsBetween(fromId, toId, parentOf) {
     depth += 1;
   }
 
-  const down = [];
+  const down: string[] = [];
   cursor = toId;
   while (cursor && !fromAncestors.has(cursor)) {
     down.push(cursor);
@@ -573,15 +465,10 @@ export function hopsBetween(fromId, toId, parentOf) {
     cursor = parentOf.get(cursor) ?? null;
   }
   down.reverse();
-  const seq = [];
+  const seq: string[] = [];
   for (const id of [...up, lca, ...down]) {
     if (id && id !== seq[seq.length - 1]) seq.push(id);
   }
   if (seq[0] !== fromId) seq.unshift(fromId);
   return seq;
-}
-
-export function hiddenCount(allChildIds, shownChildIds) {
-  const shown = new Set(shownChildIds);
-  return allChildIds.filter((id) => !shown.has(id)).length;
 }
