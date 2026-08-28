@@ -55,6 +55,13 @@ func main() {
 		}
 		return
 	}
+	if cmd == "package-dmg" {
+		if err := packageDMG(); err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			os.Exit(1)
+		}
+		return
+	}
 
 	if cmd == "ensure" || flags["--ensure"] {
 		ensureBackend()
@@ -402,7 +409,13 @@ func copyTree(src, dst string) error {
 		if info.IsDir() {
 			return os.MkdirAll(target, 0o755)
 		}
-		return copyFile(path, target, 0o644)
+		perm := info.Mode().Perm()
+		if perm&0o111 != 0 {
+			perm = 0o755
+		} else if perm == 0 {
+			perm = 0o644
+		}
+		return copyFile(path, target, perm)
 	})
 }
 

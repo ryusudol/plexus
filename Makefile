@@ -1,5 +1,5 @@
 GO ?= go
-.PHONY: plexus test start quit toggle build-hud app
+.PHONY: plexus test start quit toggle build-hud app dmg
 
 plexus:
 	$(GO) build -o bin/plexus ./cmd/plexus
@@ -22,3 +22,6 @@ build-hud:
 
 app:
 	$(GO) run ./cmd/plexus package-hud
+
+dmg:
+	$(GO) run ./cmd/plexus package-dmg

@@ -14,13 +14,13 @@ Requires [Go](https://go.dev/dl/) 1.23+, a Swift toolchain (Xcode or the Command
 
 ```sh
 cd projects/plexus
-make app
-open macos/dist/Plexus.app
+make dmg
+open macos/dist/Plexus.dmg
 ```
 
-That builds `macos/dist/Plexus.app` with the HUD, Go helper, and web assets inside the bundle. Double-click it (or copy it to `/Applications`) — it starts the helper itself and does not need the repo after that.
+That builds `macos/dist/Plexus.app` (HUD, Go helper, and web assets) and wraps it in `macos/dist/Plexus.dmg`. Recipients double-click the DMG and drag **Plexus** onto **Applications**.
 
-Unsigned builds may be blocked by Gatekeeper: right-click the app → Open. Signing and notarizing are not part of this packaging step.
+`make app` builds only the `.app`. Unsigned builds may still be blocked by Gatekeeper the first time: right-click the app → Open. Signing and notarizing are not part of this packaging step.
 
 Claude Code / Codex / Grok hooks are installed on first launch and call `~/.plexus/bin/plexus`, a small wrapper that points at the bundled helper.
 
