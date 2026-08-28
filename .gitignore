@@ -1,0 +1,6 @@
+macos/.build
+macos/.swiftpm
+macos/dist
+hooks/plexus.json
+node_modules
+**/.DS_Store

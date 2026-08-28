@@ -1,0 +1,114 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Plexus</title>
+    <link rel="stylesheet" href="/app.css" />
+  </head>
+  <body>
+    <div id="app">
+      <div class="chrome" aria-hidden="true"></div>
+      <button type="button" id="btn-settings" hidden aria-hidden="true"></button>
+      <select id="session" hidden aria-hidden="true"></select>
+      <div id="picker-scrim" hidden aria-hidden="true"></div>
+      <div id="session-picker" hidden>
+        <div class="picker-frost" aria-hidden="true"></div>
+        <input id="session-search" type="search" placeholder="Search for sessions…" autocomplete="off" />
+        <div class="picker-head">Sessions</div>
+        <div id="session-list" role="listbox"></div>
+      </div>
+      <div id="settings-picker" hidden>
+        <div class="picker-frost" aria-hidden="true"></div>
+        <div class="picker-head">Settings</div>
+        <div class="picker-body">
+        <div class="settings" id="settings">
+          <div class="cell color-pick" id="color-pick" data-setting="color">
+            <span class="cell-k">Color</span>
+            <div class="color-row" id="palette" role="listbox" aria-label="Exploration color"></div>
+          </div>
+          <div class="cell" data-setting="trail">
+            <span class="cell-k">Trail</span>
+            <div class="seg" id="shape" role="tablist" aria-label="Trail layout"></div>
+          </div>
+          <div class="cell glass-cell" data-setting="glass">
+            <span class="cell-k">Glass</span>
+            <label class="glass" title="Panel opacity">
+              <input id="opacity" type="range" min="40" max="100" value="96" aria-label="Panel opacity" />
+              <output id="opacity-out">96</output>
+            </label>
+          </div>
+          <div class="cell" data-setting="follow">
+            <span class="cell-k">Follow</span>
+            <div class="seg" id="follow-seg" role="tablist" aria-label="Graph follow">
+              <button type="button" data-follow="focus" title="Stay on this session until another session gets a prompt">
+                Focus
+              </button>
+              <button type="button" data-follow="project" title="Stay on the selected project">
+                Project
+              </button>
+            </div>
+          </div>
+          <div class="cell" data-setting="display">
+            <span class="cell-k">Display</span>
+            <div class="seg icon-seg" id="theme-seg" role="tablist" aria-label="Appearance">
+              <button type="button" data-theme="dark" title="Dark" aria-label="Dark">
+                <svg viewBox="0 0 16 16" aria-hidden="true">
+                  <path
+                    d="M10.2 2.1a5.8 5.8 0 1 0 3.7 10.3A6.2 6.2 0 0 1 8.1 3.2a5 5 0 0 0 2.1-1.1z"
+                    fill="none"
+                    stroke="currentColor"
+                    stroke-width="1.4"
+                    stroke-linejoin="round"
+                  />
+                </svg>
+              </button>
+              <button type="button" data-theme="light" title="Light" aria-label="Light">
+                <svg viewBox="0 0 16 16" aria-hidden="true">
+                  <circle cx="8" cy="8" r="2.6" fill="none" stroke="currentColor" stroke-width="1.4" />
+                  <path
+                    d="M8 1.4v1.6M8 13v1.6M1.4 8h1.6M13 8h1.6M3.2 3.2l1.1 1.1M11.7 11.7l1.1 1.1M3.2 12.8l1.1-1.1M11.7 4.3l1.1-1.1"
+                    fill="none"
+                    stroke="currentColor"
+                    stroke-width="1.4"
+                    stroke-linecap="round"
+                  />
+                </svg>
+              </button>
+              <button type="button" data-theme="system" title="System" aria-label="System">
+                <svg viewBox="0 0 16 16" aria-hidden="true">
+                  <circle cx="8" cy="8" r="5.1" fill="none" stroke="currentColor" stroke-width="1.4" />
+                  <path d="M8 2.9A5.1 5.1 0 0 1 8 13.1z" fill="currentColor" />
+                </svg>
+              </button>
+            </div>
+          </div>
+        </div>
+        </div>
+      </div>
+      <div id="stage">
+        <div id="map-hit"></div>
+        <svg id="map" xmlns="http://www.w3.org/2000/svg"></svg>
+        <div class="stage-status">
+          <div class="live" id="live">waiting</div>
+        </div>
+        <div class="stage-tools">
+          <button id="btn-demo" type="button" title="Watch a sample trail" aria-label="Preview">
+            <svg viewBox="0 0 16 16" aria-hidden="true">
+              <path fill="currentColor" d="M5.1 3.55a.9.9 0 0 1 1.37-.76l7.2 4.45a.9.9 0 0 1 0 1.52l-7.2 4.45a.9.9 0 0 1-1.37-.76z" />
+            </svg>
+          </button>
+          <button type="button" id="btn-center" title="Center graph" aria-label="Center graph">
+            <svg viewBox="0 0 16 16" aria-hidden="true">
+              <circle cx="8" cy="8" r="5.2" fill="none" stroke="currentColor" stroke-width="1.4" />
+              <circle cx="8" cy="8" r="1.3" fill="currentColor" />
+              <path d="M8 1.2v2.6M8 12.2v2.6M1.2 8h2.6M12.2 8h2.6" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" />
+            </svg>
+          </button>
+        </div>
+        <div id="overflow-menu" hidden></div>
+      </div>
+    </div>
+    <script type="module" src="/app.js"></script>
+  </body>
+</html>

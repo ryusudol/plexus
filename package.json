@@ -1,0 +1,17 @@
+{
+  "name": "plexus",
+  "version": "0.2.0",
+  "private": true,
+  "type": "module",
+  "description": "macOS HUD that shows coding agents walking a repo in real time",
+  "bin": {
+    "plexus": "./bin/plexus.js"
+  },
+  "scripts": {
+    "start": "node bin/plexus.js",
+    "hud": "node bin/plexus.js",
+    "build:hud": "swift build -c release --package-path macos && node bin/package-hud.js",
+    "quit": "node bin/plexus.js quit",
+    "test": "node --test tests/extract.test.js tests/sessions.test.js"
+  }
+}
