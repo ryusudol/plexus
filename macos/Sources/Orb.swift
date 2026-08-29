@@ -50,6 +50,59 @@ final class OrbDisc: NSView {
   }
 }
 
+final class OrbClose: NSView {
+  var onClick: (() -> Void)?
+  var light = false {
+    didSet { needsDisplay = true }
+  }
+
+  override init(frame: NSRect) {
+    super.init(frame: frame)
+    wantsLayer = true
+    layer?.masksToBounds = false
+  }
+
+  @available(*, unavailable)
+  required init?(coder: NSCoder) { fatalError("init(coder:)") }
+
+  override func resetCursorRects() {
+    addCursorRect(bounds, cursor: .pointingHand)
+  }
+
+  override func draw(_ dirtyRect: NSRect) {
+    let d = min(bounds.width, bounds.height)
+    let box = NSRect(
+      x: (bounds.width - d) / 2,
+      y: (bounds.height - d) / 2,
+      width: d,
+      height: d
+    )
+    let fill = light
+      ? NSColor(calibratedWhite: 0.18, alpha: 0.82)
+      : NSColor(calibratedWhite: 0.08, alpha: 0.88)
+    fill.setFill()
+    NSBezierPath(ovalIn: box).fill()
+    let ink = light
+      ? NSColor(calibratedWhite: 1, alpha: 0.96)
+      : NSColor(calibratedWhite: 1, alpha: 0.92)
+    ink.setStroke()
+    let inset = d * 0.31
+    let p = NSBezierPath()
+    p.move(to: NSPoint(x: box.minX + inset, y: box.minY + inset))
+    p.line(to: NSPoint(x: box.maxX - inset, y: box.maxY - inset))
+    p.move(to: NSPoint(x: box.minX + inset, y: box.maxY - inset))
+    p.line(to: NSPoint(x: box.maxX - inset, y: box.minY + inset))
+    p.lineWidth = 1.35
+    p.lineCapStyle = .round
+    p.stroke()
+  }
+
+  override func mouseUp(with event: NSEvent) {
+    let loc = convert(event.locationInWindow, from: nil)
+    if bounds.contains(loc) { onClick?() }
+  }
+}
+
 final class OrbPanel: NSPanel {
   override var canBecomeKey: Bool { false }
   override var canBecomeMain: Bool { false }
@@ -58,7 +111,7 @@ final class OrbPanel: NSPanel {
 final class OrbView: NSView {
   private let disc = OrbDisc(frame: .zero)
   private let glyph = PlexusGlyph(frame: .zero)
-  private let closeBtn = NSButton(frame: .zero)
+  private let closeBtn = OrbClose(frame: .zero)
   private var hoverTimer: Timer?
   private var tracking: NSTrackingArea?
   private var downMouse: NSPoint?
@@ -93,22 +146,11 @@ final class OrbView: NSView {
     glyph.wantsLayer = true
     disc.addSubview(glyph)
 
-    let d: CGFloat = 18
-    closeBtn.frame = NSRect(x: bounds.width - d - 6, y: bounds.height - d - 6, width: d, height: d)
-    closeBtn.bezelStyle = .circular
-    closeBtn.setButtonType(.momentaryChange)
-    closeBtn.isBordered = false
-    closeBtn.imagePosition = .imageOnly
-    closeBtn.imageScaling = .scaleProportionallyDown
-    let symbol = NSImage(systemSymbolName: "xmark.circle.fill", accessibilityDescription: "Close")
-    symbol?.isTemplate = true
-    closeBtn.image = symbol
-    closeBtn.contentTintColor = .white
+    let d: CGFloat = 16
+    closeBtn.frame = NSRect(x: bounds.width - d - 1, y: bounds.height - d - 1, width: d, height: d)
     closeBtn.alphaValue = 0
     closeBtn.isHidden = true
-    closeBtn.target = self
-    closeBtn.action = #selector(tappedClose)
-    closeBtn.toolTip = "Close"
+    closeBtn.onClick = { [weak self] in self?.onDismiss?() }
     addSubview(closeBtn)
     applyAppearance()
   }
@@ -120,6 +162,7 @@ final class OrbView: NSView {
     window?.hasShadow = false
     needsLayout = true
     layoutSubtreeIfNeeded()
+    updateTrackingAreas()
   }
 
   override func layout() {
@@ -133,10 +176,10 @@ final class OrbView: NSView {
     )
     let inset = discSize * 0.16
     glyph.frame = disc.bounds.insetBy(dx: inset, dy: inset)
-    let close: CGFloat = 18
+    let close: CGFloat = 16
     closeBtn.frame = NSRect(
-      x: disc.frame.maxX - close * 0.55,
-      y: disc.frame.maxY - close * 0.55,
+      x: min(max(0, disc.frame.maxX - close * 0.72), bounds.width - close),
+      y: min(max(0, disc.frame.maxY - close * 0.72), bounds.height - close),
       width: close,
       height: close
     )
@@ -146,9 +189,7 @@ final class OrbView: NSView {
   private func applyAppearance() {
     disc.fill = light ? .white : .black
     layer?.shadowOpacity = Float(light ? 0.12 : 0.22)
-    closeBtn.contentTintColor = light
-      ? NSColor.black.withAlphaComponent(0.45)
-      : .white
+    closeBtn.light = light
     glyph.ink = accent
   }
 
@@ -166,10 +207,6 @@ final class OrbView: NSView {
 
   @available(*, unavailable)
   required init?(coder: NSCoder) { fatalError("init(coder:)") }
-
-  @objc private func tappedClose() {
-    onDismiss?()
-  }
 
   func startAnimating() {
     stopAnimating()
@@ -202,8 +239,8 @@ final class OrbView: NSView {
     super.updateTrackingAreas()
     if let tracking { removeTrackingArea(tracking) }
     let area = NSTrackingArea(
-      rect: disc.frame.insetBy(dx: -8, dy: -8),
-      options: [.mouseEnteredAndExited, .activeAlways],
+      rect: bounds,
+      options: [.mouseEnteredAndExited, .activeAlways, .inVisibleRect],
       owner: self,
       userInfo: nil
     )
@@ -211,9 +248,18 @@ final class OrbView: NSView {
     tracking = area
   }
 
+  private func pointerInside() -> Bool {
+    guard let window else { return false }
+    let loc = convert(window.mouseLocationOutsideOfEventStream, from: nil)
+    if closeBtn.frame.insetBy(dx: -8, dy: -8).contains(loc) { return true }
+    let center = NSPoint(x: disc.frame.midX, y: disc.frame.midY)
+    let radius = disc.bounds.width / 2 + 10
+    return radius > 0 && hypot(loc.x - center.x, loc.y - center.y) <= radius
+  }
+
   override func mouseEntered(with event: NSEvent) {
     hoverTimer?.invalidate()
-    hoverTimer = Timer.scheduledTimer(withTimeInterval: 0.7, repeats: false) { [weak self] _ in
+    hoverTimer = Timer.scheduledTimer(withTimeInterval: 0.28, repeats: false) { [weak self] _ in
       self?.showClose()
     }
     RunLoop.main.add(hoverTimer!, forMode: .common)
@@ -221,8 +267,19 @@ final class OrbView: NSView {
 
   override func mouseExited(with event: NSEvent) {
     hoverTimer?.invalidate()
-    hoverTimer = nil
-    hideClose()
+    if pointerInside() {
+      showClose()
+      return
+    }
+    hoverTimer = Timer.scheduledTimer(withTimeInterval: 0.08, repeats: false) { [weak self] _ in
+      guard let self else { return }
+      if self.pointerInside() {
+        self.showClose()
+        return
+      }
+      self.hideClose()
+    }
+    RunLoop.main.add(hoverTimer!, forMode: .common)
   }
 
   private func showClose() {
