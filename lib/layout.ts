@@ -40,12 +40,21 @@ export type ShownChildren = (id: string) => string[] | undefined | null;
 
 function coneSpan(n: number): number {
   if (n <= 1) return 0;
-  return Math.min(1.22, 0.36 + 0.11 * (n - 1));
+  return Math.min(Math.PI * 1.55, 1.02 + 0.3 * (n - 1));
+}
+
+function radiusForCount(n: number, span: number, minChord: number): number {
+  if (n <= 1 || span <= 0) return 0;
+  const theta = span / n;
+  const half = Math.max(0.06, theta / 2);
+  return minChord / (2 * Math.sin(half));
 }
 
 function coneRadius(n: number): number {
-  if (n <= 1) return 62;
-  return 62 + Math.min(28, (n - 2) * 4);
+  const span = coneSpan(n);
+  const base = n <= 1 ? 108 : 116;
+  const grown = 108 + Math.min(56, Math.max(0, n - 2) * 8);
+  return Math.min(300, Math.max(base, grown, radiusForCount(n, span, 82)));
 }
 
 function ringRadius(depth: number): number {
@@ -103,15 +112,67 @@ function unitHash(id: string): number {
 
 function neuronSpan(n: number, depth: number): number {
   if (n <= 1) return 0;
-  if (depth === 0) return Math.min(Math.PI * 1.92, 0.95 + 0.4 * (n - 1));
-  return Math.min(1.7, 0.52 + 0.17 * (n - 1));
+  // Soma: two dendrites sit nearly opposite; three or more fill the disk.
+  if (depth === 0) return n === 2 ? Math.PI * 1.85 : Math.PI * 2;
+  return Math.min(2.55, 0.98 + 0.34 * (n - 1));
 }
 
 function neuronLen(n: number, depth: number, t: number, index: number): number {
-  const base = depth === 0 ? 70 : 54;
-  const spread = Math.min(36, Math.max(0, n - 1) * 5);
-  const pulse = Math.sin(index * 2.15 + t * 4.2) * (depth === 0 ? 18 : 12);
-  return base + spread + pulse;
+  const base = depth === 0 ? 124 : 92;
+  const spread = Math.min(72, Math.max(0, n - 1) * 10);
+  const pulse = Math.sin(index * 2.15 + t * 4.2) * (depth === 0 ? 28 : 16);
+  const floor = radiusForCount(n, neuronSpan(n, depth), depth === 0 ? 58 : 50);
+  return Math.max(floor, base + spread + pulse);
+}
+
+function separateOverlaps(
+  pos: Map<string, NodePos>,
+  rootId: string,
+  getShownChildren: ShownChildren,
+  minDist: number,
+) {
+  const parentOf = new Map<string, string>();
+  function walk(id: string) {
+    for (const child of getShownChildren(id) || []) {
+      parentOf.set(child, id);
+      walk(child);
+    }
+  }
+  walk(rootId);
+  const ids = [...pos.keys()];
+  for (let iter = 0; iter < 12; iter += 1) {
+    let hits = 0;
+    for (let i = 0; i < ids.length; i += 1) {
+      if (ids[i] === rootId) continue;
+      const a = pos.get(ids[i]);
+      if (!a) continue;
+      for (let j = i + 1; j < ids.length; j += 1) {
+        if (ids[j] === rootId) continue;
+        if (parentOf.get(ids[i]) === ids[j] || parentOf.get(ids[j]) === ids[i]) continue;
+        const b = pos.get(ids[j]);
+        if (!b) continue;
+        const dx = b.x - a.x;
+        const dy = b.y - a.y;
+        const d = Math.hypot(dx, dy) || 0.01;
+        if (d >= minDist) continue;
+        hits += 1;
+        const push = (minDist - d) / 2;
+        const nx = dx / d;
+        const ny = dy / d;
+        a.x -= nx * push;
+        a.y -= ny * push;
+        b.x += nx * push;
+        b.y += ny * push;
+      }
+    }
+    if (!hits) break;
+  }
+  for (const [id, p] of pos) {
+    const parentId = parentOf.get(id);
+    const parent = parentId ? pos.get(parentId) : null;
+    if (!parent) continue;
+    p.angle = Math.atan2(p.y - parent.y, p.x - parent.x);
+  }
 }
 
 function wrapAngle(a: number): number {
@@ -155,7 +216,7 @@ export function layoutRadial({
   count(rootId);
 
   const pos = new Map<string, NodePos>();
-  function place(id: string, x: number, y: number, heading: number, depth: number) {
+  function place(id: string, x: number, y: number, heading: number, depth: number, a0: number, a1: number) {
     pos.set(id, {
       x,
       y,
@@ -166,27 +227,45 @@ export function layoutRadial({
     });
     const kids = getShownChildren(id) || [];
     if (!kids.length) return;
-    const span = coneSpan(kids.length);
-    const radius = coneRadius(kids.length);
+    const n = kids.length;
+    const avail = Math.max(0, a1 - a0);
+    const span = n <= 1 ? 0 : Math.min(coneSpan(n), avail * 0.92);
     const total = kids.reduce((sum, child) => sum + (leafCount.get(child) || 1), 0) || 1;
-    let cursor = heading - span / 2;
-    for (const child of kids) {
-      const slice =
-        span === 0
-          ? 0
-          : span * ((leafCount.get(child) || 1) / total);
-      const childHeading = kids.length === 1 ? heading : cursor + slice / 2;
+    const shares = kids.map((child) => 0.55 / n + (0.45 * (leafCount.get(child) || 1)) / total);
+    const shareSum = shares.reduce((sum, share) => sum + share, 0) || 1;
+    const minTheta = n > 1 ? span * Math.min(...shares) / shareSum : span;
+    const radius = Math.min(
+      300,
+      Math.max(
+        coneRadius(n),
+        minTheta > 0 ? 78 / (2 * Math.sin(Math.max(0.06, minTheta / 2))) : 0,
+      ),
+    );
+    let start = heading - span / 2;
+    if (span > 0 && start < a0) start = a0;
+    if (span > 0 && start + span > a1) start = a1 - span;
+    let cursor = span === 0 ? heading : start;
+    kids.forEach((child, index) => {
+      const slice = span === 0 ? 0 : span * (shares[index] / shareSum);
+      const childHeading = n === 1 ? heading : cursor + slice / 2;
+      const childA0 = n === 1 ? a0 : cursor;
+      const childA1 = n === 1 ? a1 : cursor + slice;
       place(
         child,
         x + Math.cos(childHeading) * radius,
         y + Math.sin(childHeading) * radius,
         childHeading,
         depth + 1,
+        childA0,
+        childA1,
       );
       cursor += slice || 0;
-    }
+    });
   }
-  place(rootId, 0, 0, Math.PI / 2, 0);
+  const rootKids = getShownChildren(rootId) || [];
+  const rootSpan = coneSpan(rootKids.length) || 0.01;
+  place(rootId, 0, 0, Math.PI / 2, 0, Math.PI / 2 - rootSpan / 2, Math.PI / 2 + rootSpan / 2);
+  separateOverlaps(pos, rootId, getShownChildren, 58);
   return finishLayout(pos, rootId, getShownChildren);
 }
 
@@ -275,7 +354,9 @@ export function layoutNeurons({
       const t = unitHash(child);
       const wobble = span === 0 ? (t - 0.5) * 0.2 : (t - 0.5) * Math.min(0.28, Math.max(0.06, slice * 0.5));
       const childHeading = n === 1 ? heading + wobble : cursor + slice / 2 + wobble;
-      const radius = neuronLen(n, depth, t, index);
+      const leaves = leafCount.get(child) || 1;
+      const bulk = Math.min(96, Math.log2(1 + leaves) * 22);
+      const radius = neuronLen(n, depth, t, index) + bulk;
       place(
         child,
         x + Math.cos(childHeading) * radius,
@@ -335,30 +416,35 @@ function attachOnCircle(parentPos: NodePos, siblingPositions: NodePos[]): NodePo
 
 function attachOnNeuron(parentPos: NodePos, siblingPositions: NodePos[]): NodePos {
   const heading0 = parentPos.angle ?? Math.PI / 2;
-  const depth = (parentPos.depth || 0) + 1;
-  const jitter = ((siblingPositions.length + 1) * 0.37) % 1;
+  const parentDepth = parentPos.depth || 0;
+  const depth = parentDepth + 1;
+  const n = siblingPositions.length + 1;
+  const jitter = (n * 0.37) % 1;
+  const radius = Math.max(
+    neuronLen(n, parentDepth, jitter, siblingPositions.length),
+    siblingPositions.length
+      ? siblingPositions.reduce(
+          (sum, p) => sum + Math.hypot(p.x - parentPos.x, p.y - parentPos.y),
+          0,
+        ) / siblingPositions.length
+      : 0,
+  );
+  let angle: number;
   if (!siblingPositions.length) {
-    const radius = 56 + (jitter - 0.5) * 16;
-    const angle = heading0 + (jitter - 0.5) * 0.2;
-    return {
-      x: parentPos.x + Math.cos(angle) * radius,
-      y: parentPos.y + Math.sin(angle) * radius,
-      angle,
-      depth,
-      w: 40,
-      h: 14,
-    };
+    angle = heading0 + (jitter - 0.5) * 0.22;
+  } else if (parentDepth === 0) {
+    angle = largestGapAngle(
+      siblingPositions.map((p) => Math.atan2(p.y - parentPos.y, p.x - parentPos.x)),
+    );
+  } else {
+    const angles = siblingPositions
+      .map((p) => Math.atan2(p.y - parentPos.y, p.x - parentPos.x))
+      .sort((a, b) => a - b);
+    const lo = angles[0];
+    const hi = angles[angles.length - 1];
+    const delta = Math.min(1.12, 0.58 + 0.1 * siblingPositions.length);
+    angle = hi - lo > Math.PI ? largestGapAngle(angles) : heading0 - lo > hi - heading0 ? lo - delta : hi + delta;
   }
-  const rel = siblingPositions.map((p) => ({
-    a: Math.atan2(p.y - parentPos.y, p.x - parentPos.x),
-    r: Math.hypot(p.x - parentPos.x, p.y - parentPos.y) || 56,
-  }));
-  const radius = rel.reduce((sum, item) => sum + item.r, 0) / rel.length + (jitter - 0.5) * 10;
-  const angles = rel.map((item) => item.a).sort((a, b) => a - b);
-  const lo = angles[0];
-  const hi = angles[angles.length - 1];
-  const delta = 0.34;
-  const angle = hi - lo > Math.PI ? lo - delta : hi + delta;
   return {
     x: parentPos.x + Math.cos(angle) * radius,
     y: parentPos.y + Math.sin(angle) * radius,
@@ -383,8 +469,9 @@ export function attachChild(
   if (kind === "circle") return attachOnCircle(parentPos, siblingPositions);
   if (kind === "neurons") return attachOnNeuron(parentPos, siblingPositions);
   const heading0 = parentPos.angle ?? Math.PI / 2;
+  const n = siblingPositions.length + 1;
   if (!siblingPositions.length) {
-    const radius = 62;
+    const radius = coneRadius(1);
     return {
       x: parentPos.x + Math.cos(heading0) * radius,
       y: parentPos.y + Math.sin(heading0) * radius,
@@ -396,13 +483,16 @@ export function attachChild(
   }
   const rel = siblingPositions.map((p) => ({
     a: Math.atan2(p.y - parentPos.y, p.x - parentPos.x),
-    r: Math.hypot(p.x - parentPos.x, p.y - parentPos.y) || 62,
+    r: Math.hypot(p.x - parentPos.x, p.y - parentPos.y) || coneRadius(n),
   }));
-  const radius = rel.reduce((sum, item) => sum + item.r, 0) / rel.length;
+  const radius = Math.max(
+    coneRadius(n),
+    rel.reduce((sum, item) => sum + item.r, 0) / rel.length,
+  );
   const angles = rel.map((item) => item.a).sort((a, b) => a - b);
   const lo = angles[0];
   const hi = angles[angles.length - 1];
-  const delta = 0.22;
+  const delta = Math.min(0.92, 0.46 + 0.08 * siblingPositions.length);
   const angle = hi - lo > Math.PI ? lo - delta : hi + delta;
   return {
     x: parentPos.x + Math.cos(angle) * radius,

@@ -20,6 +20,7 @@ export const els = {
   demo: document.getElementById("btn-demo") as HTMLElement | null,
   liveStatus: document.getElementById("live"),
   peek: document.getElementById("peek"),
+  copyToast: document.getElementById("copy-toast") as HTMLElement | null,
   menu: document.getElementById("overflow-menu") as HTMLElement | null,
   stage: document.getElementById("stage") as HTMLElement | null,
   palette: document.getElementById("palette"),
@@ -90,6 +91,7 @@ export const flags = {
   snapshotGen: 0,
   lastStage: { w: 0, h: 0 },
   instrumentBusy: false,
+  copyToast: 0,
 };
 
 export const defs = el("defs", {}, els.svg);

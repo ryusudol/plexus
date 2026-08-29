@@ -68,8 +68,8 @@ function graphWorldBounds(laid = state.layout) {
   let maxY = -Infinity;
   // Equal halo so the bbox center is the node-position center. An extra
   // right pad here (old 40/86) shifted the fitted graph left of the view.
-  const hx = 48;
-  const hy = 28;
+  const hx = 72;
+  const hy = 36;
   for (const p of laid.pos.values()) {
     minX = Math.min(minX, p.x - hx);
     maxX = Math.max(maxX, p.x + hx);
@@ -555,13 +555,13 @@ function paintNodeLooks(g, id, p) {
   const dot = g.querySelector(".dot");
   const mark = g.querySelector(".file-mark");
   const label = g.querySelector(".node-label");
-  const title = g.querySelector("title");
+  const hovered = g.classList.contains("is-hover") || g.classList.contains("is-copied");
   g.classList.toggle("file", file);
   g.classList.toggle("folder", !file);
   g.setAttribute("data-kind", file ? "file" : "folder");
   if (glow) {
     glow.setAttribute("fill", state.accent);
-    glow.setAttribute("opacity", live ? "0.14" : "0");
+    glow.setAttribute("opacity", hovered ? "0.3" : live ? "0.14" : "0");
   }
   const fill = live ? "#fff" : visited || root ? state.accent : "#5c5c66";
   const opacity = live || visited || here || root ? "1" : "0.35";
@@ -581,17 +581,31 @@ function paintNodeLooks(g, id, p) {
       label.textContent = "";
     } else {
       const ang = p.angle ?? Math.PI / 2;
-      const outward = Math.cos(ang) >= 0 ? 1 : -1;
-      label.setAttribute("x", String(Math.cos(ang) * 9 + outward * 2));
-      label.setAttribute("y", String(Math.sin(ang) * 9 + 4));
-      label.setAttribute("text-anchor", outward > 0 ? "start" : "end");
+      const tree = state.shape === "tree";
+      let side = Math.cos(ang) >= 0 ? 1 : -1;
+      if (tree && Math.abs(Math.cos(ang)) < 0.2) side = p.x >= 0 ? 1 : -1;
+      if (tree) {
+        let hash = 2166136261;
+        for (let i = 0; i < id.length; i += 1) {
+          hash ^= id.charCodeAt(i);
+          hash = Math.imul(hash, 16777619);
+        }
+        const lift = (hash >>> 0) % 2 === 0 ? -6 : 6;
+        label.setAttribute("x", String(side * 16));
+        label.setAttribute("y", String(4 + lift));
+      } else {
+        const dist = 14;
+        label.setAttribute("x", String(Math.cos(ang) * dist + side * 4));
+        label.setAttribute("y", String(Math.sin(ang) * dist + 4));
+      }
+      label.setAttribute("text-anchor", side > 0 ? "start" : "end");
       label.setAttribute("fill", visited ? state.accent : "#8b8b93");
-      label.setAttribute("opacity", visited || here || root ? "1" : "0.38");
+      label.setAttribute("opacity", hovered || visited || here || root ? "1" : "0.38");
       label.setAttribute("font-size", root ? "11" : file ? "9.5" : "10");
       label.textContent = whisperName(node.name);
     }
   }
-  if (title) title.textContent = node.path;
+  g.querySelector("title")?.remove();
 }
 
 function refreshNodeLooks() {
@@ -658,11 +672,18 @@ function drawTree(laid: GraphLayout | null | undefined, opts: { posOverride?: Ma
         "data-id": id,
         "data-kind": node.kind === "file" ? "file" : "folder",
       }, nodeG);
+      el("circle", { class: "hit", r: "18", fill: "transparent" }, g);
       el("circle", { class: "poke-glow", r: "26" }, g);
       el("circle", { class: "dot", r: "2.2" }, g);
       el("rect", { class: "file-mark", x: "-2.1", y: "-2.1", width: "4.2", height: "4.2", rx: "0.7" }, g);
       el("text", { class: "node-label" }, g);
-      g.appendChild(document.createElementNS(svgNS, "title"));
+      g.addEventListener("pointerenter", () => {
+        g.classList.add("is-hover");
+        nodeG.appendChild(g);
+      });
+      g.addEventListener("pointerleave", () => {
+        g.classList.remove("is-hover");
+      });
       g.addEventListener("pointerdown", (ev) => ev.stopPropagation());
       g.addEventListener("click", (ev) => {
         ev.stopPropagation();
@@ -1172,7 +1193,7 @@ async function relayout({ tween = true, force = false }: { tween?: boolean; forc
     const laid = fitAndLayout();
     if (!laid) return;
     rememberTrailEdges(laid);
-    await interpolateLayout(tween ? prev : null, laid, tween && prev ? 480 : 0);
+    await interpolateLayout(tween ? prev : null, laid, tween && prev ? motion(420) : 0);
     flags.userMovedCamera = false;
     if (stageReady()) await fitToStage({ tween });
     else scheduleFit();
@@ -1331,14 +1352,18 @@ async function visit(
     expandPath(resolved);
     state.lastFocus.set(resolved, Date.now());
     markTrail(resolved, true);
-    const added = appendMissingNodes();
-    rememberTrailEdges(state.layout);
-    if (added.length) {
-      drawTree(state.layout, { entering: new Set(added) });
+    if (state.mode === "demo" || state.mode === "replay") {
+      await relayout({ tween: true, force: true });
     } else {
-      refreshNodeLooks();
+      const added = appendMissingNodes();
+      rememberTrailEdges(state.layout);
+      if (added.length) {
+        drawTree(state.layout, { entering: new Set(added) });
+      } else {
+        refreshNodeLooks();
+      }
+      await keepGraphFramed({ tween: true, extraIds: [...added, resolved], agent });
     }
-    await keepGraphFramed({ tween: true, extraIds: [...added, resolved], agent });
     peekHere(resolved, meta.filePath);
     pushLog({
       toolName: meta.toolName,
@@ -1354,10 +1379,49 @@ async function visit(
   });
 }
 
+function showCopied(path: string) {
+  const toast = els.copyToast;
+  if (!toast) return;
+  toast.textContent = `Copied  ${path}`;
+  toast.hidden = false;
+  toast.classList.add("show");
+  window.clearTimeout(flags.copyToast);
+  flags.copyToast = window.setTimeout(() => {
+    toast.classList.remove("show");
+  }, 1600);
+}
+
+async function copyNodePath(path: string) {
+  if (!path) return false;
+  try {
+    if (navigator.clipboard?.writeText) {
+      await navigator.clipboard.writeText(path);
+    } else {
+      const ta = document.createElement("textarea");
+      ta.value = path;
+      ta.setAttribute("readonly", "");
+      ta.style.position = "fixed";
+      ta.style.opacity = "0";
+      document.body.appendChild(ta);
+      ta.select();
+      document.execCommand("copy");
+      ta.remove();
+    }
+    showCopied(path);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 async function onNodeClick(id) {
   els.menu.hidden = true;
   const node = state.nodes.get(id);
   if (!node) return;
+  const g = graphEls.nodes.get(id);
+  g?.classList.add("is-copied");
+  window.setTimeout(() => g?.classList.remove("is-copied"), 420);
+  await copyNodePath(node.path);
   if (node.kind === "file") {
     peekHere(node.parentId, node.path);
     return;
@@ -1562,7 +1626,7 @@ function overStage(ev) {
 }
 function onMapPointerDown(ev) {
   const node = ev.target instanceof Element ? ev.target : ev.target?.parentElement;
-  if (node?.closest(".folder, .more, #btn-center, #btn-demo, .stage-tools, #overflow-menu, .face, header, footer, .chrome")) {
+  if (node?.closest(".folder, .file, .more, #btn-center, #btn-demo, .stage-tools, #overflow-menu, .face, header, footer, .chrome")) {
     return;
   }
   if (!overStage(ev)) return;
