@@ -9,7 +9,7 @@
     "hud": "go run ./cmd/plexus",
     "build:hud": "swift build -c release --package-path macos && go run ./cmd/plexus package-hud",
     "quit": "go run ./cmd/plexus quit",
-    "test": "go test ./... && node --test tests/layout.test.ts",
+    "test": "go test ./... && node --test tests/*.test.ts",
     "typecheck": "tsc --noEmit -p tsconfig.web.json"
   },
   "devDependencies": {

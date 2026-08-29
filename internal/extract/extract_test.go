@@ -270,4 +270,139 @@ func TestAcpVisits(t *testing.T) {
 	}, SessionHint{}) != nil {
 		t.Fatal("ls")
 	}
+
+	titled := VisitFromAcpRecord(map[string]any{
+		"update": map[string]any{
+			"sessionUpdate": "tool_call",
+			"toolCallId":    "c6",
+			"title":         "read `/repo/web/page.tsx`",
+		},
+	}, SessionHint{SessionID: "s1", Cwd: "/repo"})
+	if titled == nil || FolderPath(&titled.Visit) != "/repo/web" {
+		t.Fatalf("title path %v", titled)
+	}
+}
+
+func TestShellToolsAndSessionStart(t *testing.T) {
+	for _, name := range []string{"Bash", "bash", "Shell", "shell", "exec", "local_shell", "run_terminal_command"} {
+		if !IsShellTool(name) {
+			t.Fatalf("%s", name)
+		}
+		if ExtractVisit(map[string]any{
+			"toolName":  name,
+			"toolInput": map[string]any{"command": "ls /repo/src"},
+			"cwd":       "/repo",
+		}) != nil {
+			t.Fatalf("visit %s", name)
+		}
+	}
+	start := ExtractVisit(map[string]any{
+		"hookEventName": "SessionStart",
+		"workspaceRoot": "/Users/me/proj",
+		"sessionId":     "s1",
+	})
+	if start == nil || FolderPath(start) != "/Users/me/proj" {
+		t.Fatalf("start %v", start)
+	}
+	if ExtractVisit(map[string]any{"foo": 1}) != nil {
+		t.Fatal("empty")
+	}
+}
+
+func TestApplyPatchAndToolArgs(t *testing.T) {
+	patch := "*** Begin Patch\n*** Add File: /repo/new.ts\n@@\n+a\n*** Delete File: /repo/old.ts\n*** Move File: /repo/a.ts\n*** End Patch\n"
+	into := []string{}
+	CollectApplyPatchPaths(patch, &into)
+	if len(into) != 3 || into[0] != "/repo/new.ts" || into[2] != "/repo/a.ts" {
+		t.Fatalf("%v", into)
+	}
+	visit := ExtractVisit(map[string]any{
+		"toolName":  "apply_patch",
+		"arguments": patch,
+		"cwd":       "/repo",
+	})
+	if visit == nil || FolderPath(visit) != "/repo" {
+		t.Fatalf("%v", visit)
+	}
+	args := ExtractVisit(map[string]any{
+		"name":     "Read",
+		"toolArgs": map[string]any{"file_path": "/repo/lib/x.ts"},
+		"cwd":      "/repo",
+	})
+	if args == nil || FilePath(args) != "/repo/lib/x.ts" {
+		t.Fatalf("toolArgs %v", args)
+	}
+	locs := ExtractVisit(map[string]any{
+		"toolName":  "read_file",
+		"locations": []any{map[string]any{"path": "/repo/src/main.ts"}},
+		"cwd":       "/repo",
+	})
+	if locs == nil || FolderPath(locs) != "/repo/src" {
+		t.Fatalf("locations %v", locs)
+	}
+}
+
+func TestInferProvider(t *testing.T) {
+	if InferProvider(map[string]any{"provider": "codex"}) != "codex" {
+		t.Fatal("field")
+	}
+	if InferProvider(map[string]any{"transcript_path": "/Users/me/.claude/projects/x.jsonl"}) != "claude" {
+		t.Fatal("transcript")
+	}
+	if InferProvider(map[string]any{"source": "/Users/me/.codex/sessions/x.jsonl"}) != "codex" {
+		t.Fatal("source")
+	}
+	if InferProvider(map[string]any{"tool_name": "apply_patch"}) != "codex" {
+		t.Fatal("codex tool")
+	}
+	if InferProvider(map[string]any{"name": "read_file"}) != "grok" {
+		t.Fatal("default")
+	}
+}
+
+func TestCollectNestedPaths(t *testing.T) {
+	visit := ExtractVisit(map[string]any{
+		"toolName":  "read_file",
+		"toolInput": `{"target_file":"/repo/nested/a.ts"}`,
+		"cwd":       "/repo",
+	})
+	if visit == nil || FilePath(visit) != "/repo/nested/a.ts" {
+		t.Fatalf("nested json %v", visit)
+	}
+	visit = ExtractVisit(map[string]any{
+		"toolName":  "read_file",
+		"toolInput": []any{map[string]any{"path": "/repo/arr/b.ts"}},
+		"cwd":       "/repo",
+	})
+	if visit == nil || FolderPath(visit) != "/repo/arr" {
+		t.Fatalf("array %v", visit)
+	}
+	visit = ExtractVisit(map[string]any{
+		"toolName": "apply_patch",
+		"toolInput": map[string]any{
+			"patch": "*** Begin Patch\n*** Update File: /repo/p.ts\n*** End Patch\n",
+		},
+		"cwd": "/repo",
+	})
+	if visit == nil || FilePath(visit) != "/repo/p.ts" {
+		t.Fatalf("patch %v", visit)
+	}
+	if ExtractVisit(nil) != nil {
+		t.Fatal("nil")
+	}
+}
+
+func TestParentFolderAndDropGlob(t *testing.T) {
+	if ParentFolder("/repo/src/a.ts", "/") != "/repo/src" {
+		t.Fatal("unix")
+	}
+	if ParentFolder("", "/") != "/" {
+		t.Fatal("empty")
+	}
+	if DropGlobSegments(`C:\repo\src\**\*.ts`) != "C:/repo/src" {
+		t.Fatalf("%q", DropGlobSegments(`C:\repo\src\**\*.ts`))
+	}
+	if DropGlobSegments("**/*.ts") != "" {
+		t.Fatal("all glob")
+	}
 }

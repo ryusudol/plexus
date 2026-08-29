@@ -13,6 +13,6 @@
     "isolatedModules": true,
     "types": ["node"]
   },
-  "include": ["lib/**/*.ts", "tests/layout.test.ts", "public/hud.ts", "public/globals.d.ts"],
+  "include": ["lib/**/*.ts", "tests/**/*.ts", "public/hud.ts", "public/globals.d.ts"],
   "exclude": []
 }

@@ -24,8 +24,12 @@ func ListAgentPids() []int {
 		_ = cmd.Process.Kill()
 		return nil
 	}
+	return parseAgentLines(string(out))
+}
+
+func parseAgentLines(out string) []int {
 	pids := []int{}
-	for _, line := range strings.Split(string(out), "\n") {
+	for _, line := range strings.Split(out, "\n") {
 		line = strings.TrimSpace(line)
 		match := regexp.MustCompile(`^(\d+)\s+(.*)$`).FindStringSubmatch(line)
 		if match == nil {

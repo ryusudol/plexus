@@ -793,3 +793,99 @@ func TestClaudeAndCodexLists(t *testing.T) {
 		t.Fatalf("%v", hub.Roster)
 	}
 }
+
+func TestSetFollowModeAndSelected(t *testing.T) {
+	home := tmpHome(t)
+	hub := New(home, func(any) {})
+	if hub.GetFollowMode() != "focus" {
+		t.Fatal("default")
+	}
+	hub.SetFollowMode("project")
+	if hub.GetFollowMode() != "project" {
+		t.Fatal("project")
+	}
+	hub.SetFollowMode("nope")
+	if hub.GetFollowMode() != "focus" {
+		t.Fatal("invalid")
+	}
+	pid := os.Getpid()
+	writeGrokSession(t, home, "a", "/a", "a", "", pid)
+	writeGrokSession(t, home, "b", "/b", "b", "", pid)
+	write(t, filepath.Join(home, "active_sessions.json"),
+		`[{"session_id":"a","pid":`+itoa(pid)+`,"cwd":"/a"},{"session_id":"b","pid":`+itoa(pid)+`,"cwd":"/b"}]`)
+	hub.ScanRoster()
+	hub.Select("b")
+	if hub.Selected() != "b" {
+		t.Fatal(hub.Selected())
+	}
+}
+
+func TestNoteHookKeepsRowWithoutCwd(t *testing.T) {
+	hub := New(tmpHome(t), func(any) {})
+	hub.NoteHook(map[string]any{
+		"provider":        "claude",
+		"session_id":      "uuid-1",
+		"cwd":             "/repo",
+		"hook_event_name": "PreToolUse",
+		"tool_name":       "Read",
+		"tool_input":      map[string]any{"file_path": "/repo/src/a.ts"},
+		"pid":             7,
+	})
+	row := hub.hooked["claude:uuid-1"]
+	if row.Cwd != "/repo" || row.PID != 7 {
+		t.Fatalf("%+v", row)
+	}
+	hub.NoteHook(map[string]any{
+		"provider":        "claude",
+		"session_id":      "uuid-1",
+		"hook_event_name": "Stop",
+	})
+	row = hub.hooked["claude:uuid-1"]
+	if row.Cwd != "/repo" || row.PID != 7 {
+		t.Fatalf("wiped %+v", row)
+	}
+	if hub.busy["claude:uuid-1"] {
+		t.Fatal("idle")
+	}
+}
+
+func TestNoteHookPromptFollows(t *testing.T) {
+	hub := New(tmpHome(t), func(any) {})
+	hub.FollowMode = "focus"
+	hub.SelectedID = "keep"
+	hub.NoteHook(map[string]any{
+		"provider":        "claude",
+		"session_id":      "uuid-2",
+		"cwd":             "/other",
+		"hook_event_name": "UserPromptSubmit",
+	})
+	if hub.SelectedID != "claude:uuid-2" {
+		t.Fatalf("follow %s", hub.SelectedID)
+	}
+	hub.FollowMode = "project"
+	hub.SelectedID = "keep"
+	hub.NoteHook(map[string]any{
+		"provider":        "claude",
+		"session_id":      "uuid-3",
+		"cwd":             "/x",
+		"hook_event_name": "UserPromptSubmit",
+	})
+	if hub.SelectedID != "keep" {
+		t.Fatal("project")
+	}
+}
+
+func TestReplayDedupesToolCalls(t *testing.T) {
+	home := tmpHome(t)
+	cwd := "/Users/me/proj"
+	id := "s1"
+	line := `{"params":{"update":{"sessionUpdate":"tool_call","toolCallId":"t1","rawInput":{"target_file":"/Users/me/proj/src/a.ts"},"_meta":{"x.ai/tool":{"name":"read_file"}}}}}` + "\n"
+	writeGrokSession(t, home, id, cwd, "t", line+line, os.Getpid())
+	visits := Replay(types.SessionRow{SessionID: id, Cwd: cwd, Provider: "grok"}, home)
+	if len(visits) != 1 {
+		t.Fatalf("%d", len(visits))
+	}
+	if len(Replay(types.SessionRow{SessionID: "missing", Cwd: cwd}, home)) != 0 {
+		t.Fatal("missing returns empty")
+	}
+}
