@@ -395,7 +395,7 @@ func copyTree(src, dst string) error {
 			return err
 		}
 		name := info.Name()
-		if name == ".DS_Store" || name == "node_modules" || name == ".git" {
+		if name == ".DS_Store" || name == "node_modules" || name == ".git" || name == "hooks" {
 			if info.IsDir() {
 				return filepath.SkipDir
 			}

@@ -161,10 +161,18 @@ func InstallGrok(root, bin string) string {
 	payload, _ := json.MarshalIndent(spec, "", "  ")
 	payload = append(payload, '\n')
 	_ = os.WriteFile(filepath.Join(hooksDir, "plexus.json"), payload, 0o644)
-	_ = os.MkdirAll(filepath.Join(root, "hooks"), 0o755)
-	_ = os.WriteFile(filepath.Join(root, "hooks", "plexus.json"), payload, 0o644)
+	// Never write into a signed .app — that invalidates Gatekeeper and
+	// macOS then reports "The application cannot be opened".
+	if !paths.InsideAppBundle(root) {
+		_ = os.MkdirAll(filepath.Join(root, "hooks"), 0o755)
+		_ = os.WriteFile(filepath.Join(root, "hooks", "plexus.json"), payload, 0o644)
+	}
 	for _, stale := range []string{"grok-explore.json"} {
-		for _, dir := range []string{hooksDir, filepath.Join(root, "hooks")} {
+		dirs := []string{hooksDir}
+		if !paths.InsideAppBundle(root) {
+			dirs = append(dirs, filepath.Join(root, "hooks"))
+		}
+		for _, dir := range dirs {
 			_ = os.Remove(filepath.Join(dir, stale))
 		}
 	}

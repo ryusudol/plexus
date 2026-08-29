@@ -13,4 +13,19 @@ func TestDetectAppBundle(t *testing.T) {
 	if _, _, ok := DetectAppBundle(""); ok {
 		t.Fatal("empty")
 	}
+	if _, _, ok := DetectAppBundle("/tmp/MacOS/plexus"); ok {
+		t.Fatal("no Contents")
+	}
+	if _, _, ok := DetectAppBundle("/tmp/Foo/Contents/MacOS/plexus"); ok {
+		t.Fatal("not .app")
+	}
+}
+
+func TestInsideAppBundle(t *testing.T) {
+	if !InsideAppBundle("/Applications/Plexus.app/Contents/Resources") {
+		t.Fatal("resources should be inside the app")
+	}
+	if InsideAppBundle("/Users/me/projects/plexus") {
+		t.Fatal("repo root is not an app bundle")
+	}
 }

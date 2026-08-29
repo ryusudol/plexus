@@ -25,3 +25,18 @@ func DetectAppBundle(exe string) (app, resources string, ok bool) {
 	}
 	return app, filepath.Join(contents, "Resources"), true
 }
+
+// InsideAppBundle reports whether path is inside a .app wrapper.
+func InsideAppBundle(path string) bool {
+	p := filepath.Clean(path)
+	for {
+		if strings.HasSuffix(strings.ToLower(p), ".app") {
+			return true
+		}
+		next := filepath.Dir(p)
+		if next == p {
+			return false
+		}
+		p = next
+	}
+}
