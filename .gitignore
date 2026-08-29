@@ -5,3 +5,4 @@ hooks/plexus.json
 node_modules
 bin/plexus
 **/.DS_Store
+video/
