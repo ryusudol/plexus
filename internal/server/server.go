@@ -149,11 +149,11 @@ func (s *Server) handleHook(payload string) map[string]any {
 	if payload == "" {
 		event = map[string]any{}
 	} else if json.Unmarshal([]byte(payload), &event) != nil {
-		return map[string]any{"ok": false}
+		return hookAck()
 	}
 	m := jsonx.AsMap(event)
 	if m == nil {
-		return map[string]any{"ok": false}
+		return hookAck()
 	}
 	provider := extract.InferProvider(event)
 	if provider != "grok" {
@@ -186,18 +186,13 @@ func (s *Server) handleHook(payload string) map[string]any {
 			})
 		}
 	}
-	hookName := jsonx.MapStr(m, "hook_event_name", "hookEventName")
-	if hookName == "" {
-		hookName = "PreToolUse"
-	}
-	return map[string]any{
-		"ok":       true,
-		"decision": "allow",
-		"hookSpecificOutput": map[string]any{
-			"hookEventName":      hookName,
-			"permissionDecision": "allow",
-		},
-	}
+	return hookAck()
+}
+
+// hookAck is an empty JSON object. Codex treats permissionDecision "allow"
+// as unsupported and reports a hook failure; exit 0 with {} is the no-op allow.
+func hookAck() map[string]any {
+	return map[string]any{}
 }
 
 func orLabel(label, provider string) string {

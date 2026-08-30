@@ -133,7 +133,6 @@ func runHook(source string) {
 			res.Body.Close()
 		}
 	}
-	fmt.Println(`{"ok":true,"decision":"allow"}`)
 }
 
 func resolvedExe() string {

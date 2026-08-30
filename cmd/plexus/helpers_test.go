@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"io"
 	"net"
 	"net/http"
 	"os"
@@ -14,6 +15,52 @@ import (
 	"github.com/ryusudol/plexus/internal/config"
 	"github.com/ryusudol/plexus/internal/paths"
 )
+
+func TestRunHookIsSilent(t *testing.T) {
+	t.Setenv("PORT", "1")
+
+	oldStdin := os.Stdin
+	inR, inW, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	os.Stdin = inR
+	t.Cleanup(func() {
+		os.Stdin = oldStdin
+		_ = inR.Close()
+		_ = inW.Close()
+	})
+	if _, err := inW.Write([]byte(`{"hook_event_name":"PreToolUse"}`)); err != nil {
+		t.Fatal(err)
+	}
+	_ = inW.Close()
+
+	oldStdout := os.Stdout
+	outR, outW, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	os.Stdout = outW
+	t.Cleanup(func() {
+		os.Stdout = oldStdout
+		_ = outR.Close()
+		_ = outW.Close()
+	})
+
+	runHook("codex")
+	if err := outW.Close(); err != nil {
+		t.Fatal(err)
+	}
+	os.Stdout = oldStdout
+
+	got, err := io.ReadAll(outR)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 0 {
+		t.Fatalf("hook wrote stdout: %q", got)
+	}
+}
 
 func TestShQuoteAndWrapper(t *testing.T) {
 	if shQuote("a'b") != `'a'"'"'b'` {

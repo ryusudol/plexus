@@ -41,6 +41,26 @@ func do(s *Server, method, path, body string) *httptest.ResponseRecorder {
 	return rec
 }
 
+func assertHookSilent(t *testing.T, rec *httptest.ResponseRecorder) {
+	t.Helper()
+	if rec.Code != 200 {
+		t.Fatal(rec.Code)
+	}
+	var hook map[string]any
+	if json.Unmarshal(rec.Body.Bytes(), &hook) != nil {
+		t.Fatal(rec.Body.String())
+	}
+	if _, ok := hook["decision"]; ok {
+		t.Fatalf("decision %v", hook)
+	}
+	if _, ok := hook["hookSpecificOutput"]; ok {
+		t.Fatalf("hookSpecificOutput %v", hook)
+	}
+	if rec.Body.String() != "{}" {
+		t.Fatalf("%s", rec.Body.Bytes())
+	}
+}
+
 func TestHealthAndUnknown(t *testing.T) {
 	_, _, root := isolate(t)
 	s := New(root)
@@ -62,19 +82,10 @@ func TestHookAllowAndVisit(t *testing.T) {
 	_, ws, root := isolate(t)
 	s := New(root)
 	rec := do(s, http.MethodPost, "/hook", `{`)
-	if rec.Code != 200 {
-		t.Fatal(rec.Code)
-	}
-	var bad map[string]any
-	if json.Unmarshal(rec.Body.Bytes(), &bad) != nil || bad["ok"] != false {
-		t.Fatalf("%s", rec.Body.Bytes())
-	}
+	assertHookSilent(t, rec)
 
 	rec = do(s, http.MethodPost, "/hook", "")
-	var empty map[string]any
-	if json.Unmarshal(rec.Body.Bytes(), &empty) != nil || empty["ok"] != true {
-		t.Fatalf("%s", rec.Body.Bytes())
-	}
+	assertHookSilent(t, rec)
 
 	payload := `{
 		"hook_event_name": "PreToolUse",
@@ -84,17 +95,7 @@ func TestHookAllowAndVisit(t *testing.T) {
 		"cwd": "` + ws + `"
 	}`
 	rec = do(s, http.MethodPost, "/hook", payload)
-	var hook map[string]any
-	if json.Unmarshal(rec.Body.Bytes(), &hook) != nil {
-		t.Fatal(rec.Body.String())
-	}
-	if hook["ok"] != true || hook["decision"] != "allow" {
-		t.Fatalf("%v", hook)
-	}
-	out := hook["hookSpecificOutput"].(map[string]any)
-	if out["permissionDecision"] != "allow" {
-		t.Fatalf("%v", out)
-	}
+	assertHookSilent(t, rec)
 
 	state := do(s, http.MethodGet, "/api/state", "")
 	var snap map[string]any
@@ -254,10 +255,7 @@ func TestHookNonObjectAndVisitAgentID(t *testing.T) {
 	_, ws, root := isolate(t)
 	s := New(root)
 	rec := do(s, http.MethodPost, "/hook", `[]`)
-	var body map[string]any
-	if json.Unmarshal(rec.Body.Bytes(), &body) != nil || body["ok"] != false {
-		t.Fatalf("%s", rec.Body.Bytes())
-	}
+	assertHookSilent(t, rec)
 	rec = do(s, http.MethodPost, "/hook", `{
 		"tool_name": "Read",
 		"tool_input": {"file_path": "`+ws+`/src/a.ts"},
