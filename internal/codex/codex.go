@@ -66,13 +66,22 @@ func ParseLine(line string, session extract.SessionHint) extract.LineParse {
 	if kind == "function_call" || kind == "custom_tool_call" || kind == "local_shell_call" {
 		activity = "busy"
 	}
+	if kind == "item_completed" {
+		item := jsonx.AsMap(payload["item"])
+		switch jsonx.Str(item["type"]) {
+		case "UserMessage":
+			prompt = true
+			activity = "busy"
+		case "CommandExecution", "FileChange":
+			activity = "busy"
+		}
+	}
 	if jsonx.Str(rec["type"]) == "event_msg" && (event == "task_complete" || jsonx.Str(payload["type"]) == "task_complete") {
 		activity = "idle"
 	}
-	parsed := extract.VisitFromCodexRecord(record, session)
-	visits := []extract.ParsedVisit{}
-	if parsed != nil {
-		visits = []extract.ParsedVisit{*parsed}
+	visits := extract.VisitFromCodexRecord(record, session)
+	if visits == nil {
+		visits = []extract.ParsedVisit{}
 	}
 	return extract.LineParse{Visits: visits, Activity: activity, Prompt: prompt}
 }
@@ -188,11 +197,9 @@ func Install(bin string) error {
 	if !hooks.HasPlexusLauncher(string(blob)) {
 		hooks.PushGroup(hm, "SessionStart", hooks.CommandGroup(quote(bin)+" --ensure", 8))
 	}
-	if !hooks.HasPlexusHook(string(blob)) {
-		command := hooks.CommandGroup(quote(bin)+" --hook --source codex", 2)
-		for _, event := range []string{"PreToolUse", "UserPromptSubmit", "Stop"} {
-			hooks.PushGroup(hm, event, command)
-		}
+	command := hooks.CommandGroup(quote(bin)+" --hook --source codex", 2)
+	for _, event := range []string{"PreToolUse", "UserPromptSubmit", "Stop"} {
+		hooks.EnsureEventHook(hm, event, command)
 	}
 	spec["hooks"] = hm
 	return hooks.SaveFile(file, spec)

@@ -147,7 +147,7 @@ func ReadSessions(home string, now time.Time) []types.SessionRow {
 	return types.NewestByID(out)
 }
 
-func Install(bin, url string) error {
+func Install(bin string) error {
 	file := filepath.Join(Home(), "settings.json")
 	settings := hooks.LoadFile(file)
 	hm := jsonx.AsMap(settings["hooks"])
@@ -156,18 +156,14 @@ func Install(bin, url string) error {
 		settings["hooks"] = hm
 	}
 	hooks.MigrateLauncherCommands(hm, bin)
+	hooks.MigratePlexusHTTP(hm, bin, "claude")
 	blob, _ := jsonMarshal(hm)
 	if !hooks.HasPlexusLauncher(string(blob)) {
 		hooks.PushGroup(hm, "SessionStart", hooks.CommandGroup(quote(bin)+" --ensure", 8))
 	}
-	if !hooks.HasHTTPHook(string(blob)) {
-		hooks.PushGroup(hm, "PreToolUse", map[string]any{
-			"matcher": "Read|Write|Edit|Glob|Grep|NotebookEdit",
-			"hooks":   []any{map[string]any{"type": "http", "url": url, "timeout": 2}},
-		})
-		sourceHook := hooks.CommandGroup(quote(bin)+" --hook --source claude", 2)
-		hooks.PushGroup(hm, "UserPromptSubmit", sourceHook)
-		hooks.PushGroup(hm, "Stop", sourceHook)
+	sourceHook := hooks.CommandGroup(quote(bin)+" --hook --source claude", 2)
+	for _, event := range []string{"PreToolUse", "UserPromptSubmit", "Stop"} {
+		hooks.EnsureEventHook(hm, event, sourceHook)
 	}
 	settings["hooks"] = hm
 	return hooks.SaveFile(file, settings)

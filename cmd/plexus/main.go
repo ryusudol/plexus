@@ -116,7 +116,7 @@ func runHook(source string) {
 	if event == nil {
 		event = map[string]any{}
 	}
-	if source == "claude" || source == "codex" {
+	if source == "claude" || source == "codex" || source == "grok" {
 		event["provider"] = source
 	}
 	if jsonx.Int(event["pid"]) == 0 && os.Getppid() > 1 {

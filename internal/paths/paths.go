@@ -1,6 +1,7 @@
 package paths
 
 import (
+	"bufio"
 	"io"
 	"os"
 	"path/filepath"
@@ -152,12 +153,14 @@ func PeekJSONL(file string, limit int) []map[string]any {
 		return nil
 	}
 	defer f.Close()
-	buf := make([]byte, 16*1024)
-	n, _ := f.Read(buf)
-	text := string(buf[:n])
+	sc := bufio.NewScanner(f)
+	// Codex session_meta lines include full base instructions and routinely
+	// exceed 16KiB. A fixed prefix read splits the first JSON object, so the
+	// session has no cwd and never enters the roster.
+	sc.Buffer(make([]byte, 64*1024), 8*1024*1024)
 	rows := []map[string]any{}
-	for _, line := range splitLines(text) {
-		line = trimSpace(line)
+	for sc.Scan() {
+		line := trimSpace(sc.Text())
 		if line == "" {
 			continue
 		}
@@ -182,19 +185,4 @@ func trimSpace(s string) string {
 		end--
 	}
 	return s[start:end]
-}
-
-func splitLines(text string) []string {
-	out := []string{}
-	start := 0
-	for i := 0; i < len(text); i++ {
-		if text[i] == '\n' {
-			out = append(out, text[start:i])
-			start = i + 1
-		}
-	}
-	if start < len(text) {
-		out = append(out, text[start:])
-	}
-	return out
 }

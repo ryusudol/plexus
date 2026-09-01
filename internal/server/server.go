@@ -135,8 +135,8 @@ func (s *Server) setRoot(next string, emit bool) string {
 }
 
 func (s *Server) installHooks(bin string) {
-	url := hooks.InstallGrok(s.root, bin)
-	if err := claude.Install(bin, url); err != nil {
+	hooks.InstallGrok(s.root, bin)
+	if err := claude.Install(bin); err != nil {
 		log.Println("Could not install Claude Code hook:", err)
 	}
 	if err := codex.Install(bin); err != nil {
@@ -189,10 +189,17 @@ func (s *Server) handleHook(payload string) map[string]any {
 	return hookAck()
 }
 
-// hookAck is an empty JSON object. Codex treats permissionDecision "allow"
-// as unsupported and reports a hook failure; exit 0 with {} is the no-op allow.
+// hookAck is a no-op observer result. Codex command hooks must not print
+// permissionDecision JSON (unsupported values fail the hook). Claude HTTP
+// hooks treat an empty 200 body as success and a `{}` JSON object as a
+// schema to validate — so the HTTP handler writes no body at all.
 func hookAck() map[string]any {
-	return map[string]any{}
+	return nil
+}
+
+func sendEmpty(w http.ResponseWriter, status int) {
+	w.Header().Set("Cache-Control", "no-store")
+	w.WriteHeader(status)
 }
 
 func orLabel(label, provider string) string {
@@ -330,7 +337,8 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	case r.Method == http.MethodPost && (u.Path == "/hook" || u.Path == "/api/visit"):
 		body, _ := io.ReadAll(r.Body)
-		sendJSON(w, 200, s.handleHook(string(body)))
+		_ = s.handleHook(string(body))
+		sendEmpty(w, 200)
 		return
 	}
 	if s.serveStatic(w, r) {

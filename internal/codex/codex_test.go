@@ -42,6 +42,19 @@ func TestParseLine(t *testing.T) {
 	if ParseLine("{", hint).Activity != "" {
 		t.Fatal("junk")
 	}
+
+	prompt := ParseLine(`{"type":"event_msg","payload":{"type":"item_completed","item":{"type":"UserMessage","content":[{"type":"text","text":"hi"}]}}}`, hint)
+	if !prompt.Prompt || prompt.Activity != "busy" {
+		t.Fatalf("user message %+v", prompt)
+	}
+	read := ParseLine(`{"type":"event_msg","payload":{"type":"item_completed","item":{"type":"CommandExecution","id":"exec-1","cwd":"file:///repo","parsed_cmd":[{"type":"read","path":"web/app.js"}]}}}`, hint)
+	if read.Activity != "busy" || len(read.Visits) != 1 || extract.FilePath(&read.Visits[0].Visit) != "/repo/web/app.js" {
+		t.Fatalf("command %+v", read)
+	}
+	exec := ParseLine(`{"payload":{"type":"custom_tool_call","name":"exec","input":"await tools.exec_command({cmd:\"ls\"})"}}`, hint)
+	if exec.Activity != "busy" || len(exec.Visits) != 0 {
+		t.Fatalf("exec %+v", exec)
+	}
 }
 
 func TestReadSessions(t *testing.T) {
@@ -91,8 +104,10 @@ func TestInstallIdempotent(t *testing.T) {
 	if len(jsonx.Slice(hm["SessionStart"])) != 1 {
 		t.Fatalf("dup start %v", hm["SessionStart"])
 	}
-	if len(jsonx.Slice(hm["PreToolUse"])) != 1 {
-		t.Fatalf("dup pre %v", hm["PreToolUse"])
+	for _, event := range []string{"PreToolUse", "UserPromptSubmit", "Stop"} {
+		if len(jsonx.Slice(hm[event])) != 1 {
+			t.Fatalf("dup %s %v", event, hm[event])
+		}
 	}
 }
 

@@ -1,7 +1,10 @@
 package extract
 
 import (
+	"net/url"
 	"regexp"
+	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -18,6 +21,7 @@ var (
 	applyPatchFile = regexp.MustCompile(`(?m)^\*\*\* (?:Add|Update|Delete|Move) File: (.+)$`)
 	titlePath      = regexp.MustCompile("`([^`]+)`")
 	globPart       = regexp.MustCompile(`[*?{\[]`)
+	winDrive       = regexp.MustCompile(`^[A-Za-z]:`)
 )
 
 var fileKeys = []string{"target_file", "targetFile", "file_path", "filePath"}
@@ -117,7 +121,7 @@ func DropGlobSegments(value string) string {
 	if normalized == "" {
 		return ""
 	}
-	isAbs := strings.HasPrefix(normalized, "/") || regexp.MustCompile(`^[A-Za-z]:`).MatchString(normalized)
+	isAbs := isAbsPath(normalized)
 	parts := strings.Split(normalized, "/")
 	kept := make([]string, 0, len(parts))
 	for i, part := range parts {
@@ -446,7 +450,7 @@ func ExtractVisit(event any, opts ...ExtractOpts) *Visit {
 		}
 	}
 
-	if workspaceRoot != "" && folderPath != "" && !strings.HasPrefix(folderPath, "/") && !regexp.MustCompile(`^[A-Za-z]:`).MatchString(folderPath) {
+	if workspaceRoot != "" && folderPath != "" && !isAbsPath(folderPath) {
 		root := strings.TrimRight(strings.ReplaceAll(workspaceRoot, "\\", "/"), "/")
 		folderPath = root + "/" + strings.TrimPrefix(folderPath, "./")
 		if filePath != "" && !strings.HasPrefix(filePath, "/") {
@@ -664,7 +668,170 @@ func VisitFromClaudeRecord(record any, session SessionHint) []ParsedVisit {
 	return out
 }
 
-func VisitFromCodexRecord(record any, session SessionHint) *ParsedVisit {
+func stripFileURL(p string) string {
+	p = strings.TrimSpace(p)
+	if len(p) >= 7 && strings.EqualFold(p[:7], "file://") {
+		if u, err := url.Parse(p); err == nil && strings.EqualFold(u.Scheme, "file") && u.Path != "" {
+			p = u.Path
+		} else {
+			p = p[7:]
+			p = strings.TrimPrefix(strings.TrimPrefix(p, "localhost"), "127.0.0.1")
+		}
+	}
+	return strings.ReplaceAll(p, "\\", "/")
+}
+
+func isAbsPath(p string) bool {
+	return strings.HasPrefix(p, "/") || winDrive.MatchString(p)
+}
+
+func joinUnderRoot(root, rel string) string {
+	root = strings.TrimRight(stripFileURL(root), "/")
+	rel = strings.TrimPrefix(strings.ReplaceAll(rel, "\\", "/"), "./")
+	if rel == "" || rel == "." {
+		return root
+	}
+	if isAbsPath(rel) {
+		return rel
+	}
+	if root == "" {
+		return rel
+	}
+	return root + "/" + rel
+}
+
+func isSingleSegment(p string) bool {
+	p = strings.Trim(strings.ReplaceAll(p, "\\", "/"), "/")
+	return p != "" && !strings.Contains(p, "/")
+}
+
+func codexCallID(base string, index int, pathVal string) *string {
+	if base == "" {
+		return nil
+	}
+	id := base + ":" + strconv.Itoa(index) + ":" + pathVal
+	return &id
+}
+
+func visitFromCodexPath(toolName, pathVal, cwd string, session SessionHint, label, ts, callID string, asFile bool) *ParsedVisit {
+	cwd = stripFileURL(cwd)
+	pathVal = stripFileURL(pathVal)
+	if pathVal == "" {
+		return nil
+	}
+	if !isAbsPath(pathVal) {
+		if cwd == "" {
+			return nil
+		}
+		pathVal = joinUnderRoot(cwd, pathVal)
+	}
+	event := map[string]any{
+		"toolName":      toolName,
+		"sessionId":     session.SessionID,
+		"workspaceRoot": cwd,
+		"timestamp":     ts,
+		"subagentType":  label,
+	}
+	if asFile {
+		event["toolInput"] = map[string]any{"file_path": pathVal, "target_file": pathVal}
+	} else {
+		event["toolInput"] = map[string]any{"target_directory": pathVal, "path": pathVal}
+	}
+	visit := ExtractVisit(event)
+	if visit == nil || visit.FolderPath == nil {
+		return nil
+	}
+	var id *string
+	if callID != "" {
+		id = &callID
+	}
+	return &ParsedVisit{ToolCallID: id, Kind: toolName, Visit: *visit}
+}
+
+func visitFromParsedCmd(cmd map[string]any, cwd string, session SessionHint, label, ts, itemID string, index int) *ParsedVisit {
+	kind := jsonx.Str(cmd["type"])
+	pathVal := stripFileURL(jsonx.Str(cmd["path"]))
+	if pathVal == "" || pathVal == "." {
+		return nil
+	}
+	tool := ""
+	asFile := false
+	switch kind {
+	case "read":
+		tool = "read_file"
+		asFile = true
+	case "list_files":
+		tool = "list_dir"
+		asFile = false
+		if isSingleSegment(pathVal) && !isAbsPath(pathVal) {
+			return nil
+		}
+	case "search":
+		tool = "grep"
+		asFile = looksLikeFile(pathVal)
+		if isSingleSegment(pathVal) && !isAbsPath(pathVal) {
+			return nil
+		}
+	default:
+		return nil
+	}
+	callID := ""
+	if id := codexCallID(itemID, index, pathVal); id != nil {
+		callID = *id
+	}
+	return visitFromCodexPath(tool, pathVal, cwd, session, label, ts, callID, asFile)
+}
+
+func visitsFromCodexItem(item map[string]any, session SessionHint, cwd, label, ts string) []ParsedVisit {
+	if item == nil {
+		return nil
+	}
+	if itemCwd := stripFileURL(jsonx.Str(item["cwd"])); itemCwd != "" {
+		cwd = itemCwd
+	}
+	itemID := jsonx.Str(item["id"])
+	switch jsonx.Str(item["type"]) {
+	case "CommandExecution":
+		out := []ParsedVisit{}
+		for i, raw := range jsonx.Slice(item["parsed_cmd"]) {
+			cmd := jsonx.AsMap(raw)
+			if cmd == nil {
+				continue
+			}
+			if v := visitFromParsedCmd(cmd, cwd, session, label, ts, itemID, i); v != nil {
+				out = append(out, *v)
+			}
+		}
+		return out
+	case "FileChange":
+		changes := jsonx.AsMap(item["changes"])
+		if changes == nil {
+			return nil
+		}
+		paths := make([]string, 0, len(changes))
+		for p := range changes {
+			p = stripFileURL(p)
+			if p != "" {
+				paths = append(paths, p)
+			}
+		}
+		sort.Strings(paths)
+		out := []ParsedVisit{}
+		for i, p := range paths {
+			callID := ""
+			if id := codexCallID(itemID, i, p); id != nil {
+				callID = *id
+			}
+			if v := visitFromCodexPath("apply_patch", p, cwd, session, label, ts, callID, true); v != nil {
+				out = append(out, *v)
+			}
+		}
+		return out
+	}
+	return nil
+}
+
+func VisitFromCodexRecord(record any, session SessionHint) []ParsedVisit {
 	rec := jsonx.AsMap(record)
 	if rec == nil {
 		return nil
@@ -677,6 +844,14 @@ func VisitFromCodexRecord(record any, session SessionHint) *ParsedVisit {
 	if kind == "" {
 		kind = jsonx.Str(rec["type"])
 	}
+	ts := jsonx.Str(rec["timestamp"])
+	label := session.Label
+	if label == "" {
+		label = "codex"
+	}
+	if kind == "item_completed" {
+		return visitsFromCodexItem(jsonx.AsMap(payload["item"]), session, stripFileURL(session.Cwd), label, ts)
+	}
 	if kind == "local_shell_call" {
 		return nil
 	}
@@ -686,10 +861,6 @@ func VisitFromCodexRecord(record any, session SessionHint) *ParsedVisit {
 	name := jsonx.Str(payload["name"])
 	if IsShellTool(name) {
 		return nil
-	}
-	label := session.Label
-	if label == "" {
-		label = "codex"
 	}
 	var toolInput any = payload["arguments"]
 	if toolInput == nil {
@@ -701,7 +872,7 @@ func VisitFromCodexRecord(record any, session SessionHint) *ParsedVisit {
 		"arguments":     payload["arguments"],
 		"sessionId":     session.SessionID,
 		"workspaceRoot": session.Cwd,
-		"timestamp":     jsonx.Str(rec["timestamp"]),
+		"timestamp":     ts,
 		"subagentType":  label,
 	}
 	visit := ExtractVisit(event)
@@ -714,7 +885,7 @@ func VisitFromCodexRecord(record any, session SessionHint) *ParsedVisit {
 	} else if s := jsonx.Str(payload["id"]); s != "" {
 		id = &s
 	}
-	return &ParsedVisit{ToolCallID: id, Kind: kind, Visit: *visit}
+	return []ParsedVisit{{ToolCallID: id, Kind: kind, Visit: *visit}}
 }
 
 func SegmentsFrom(root, folderPath string) []struct{ Name, Path string } {

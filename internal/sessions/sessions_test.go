@@ -18,7 +18,12 @@ import (
 
 func tmpHome(t *testing.T) string {
 	t.Helper()
-	return t.TempDir()
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("GROK_HOME", home)
+	t.Setenv("CODEX_HOME", filepath.Join(home, ".codex"))
+	t.Setenv("CLAUDE_CONFIG_DIR", filepath.Join(home, ".claude"))
+	return home
 }
 
 func write(t *testing.T, path, body string) {

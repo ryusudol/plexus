@@ -116,10 +116,7 @@ func TestInstallGrokWritesRepoNotApp(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	url := InstallGrok(repo, `/tmp/bin/plexus`)
-	if !strings.Contains(url, "/hook") {
-		t.Fatalf("url %q", url)
-	}
+	InstallGrok(repo, `/tmp/bin/plexus`)
 	homeHook := filepath.Join(home, ".grok", "hooks", "plexus.json")
 	repoHook := filepath.Join(repo, "hooks", "plexus.json")
 	for _, p := range []string{homeHook, repoHook} {
@@ -134,6 +131,17 @@ func TestInstallGrokWritesRepoNotApp(t *testing.T) {
 		hm := jsonx.AsMap(spec["hooks"])
 		if hm["SessionStart"] == nil || hm["PreToolUse"] == nil {
 			t.Fatalf("%s %v", p, spec)
+		}
+		pre := jsonx.AsMap(jsonx.Slice(hm["PreToolUse"])[0])
+		hook := jsonx.AsMap(jsonx.Slice(pre["hooks"])[0])
+		if jsonx.Str(hook["type"]) != "command" {
+			t.Fatalf("grok http is blocked; want command, got %v", hook)
+		}
+		if !strings.Contains(jsonx.Str(hook["command"]), "--hook --source grok") {
+			t.Fatalf("command %q", hook["command"])
+		}
+		if jsonx.Str(hook["url"]) != "" {
+			t.Fatalf("leftover url %v", hook)
 		}
 	}
 	if _, err := os.Stat(staleRepo); !os.IsNotExist(err) {
@@ -153,6 +161,48 @@ func TestInstallGrokWritesRepoNotApp(t *testing.T) {
 	}
 	if _, err := os.Stat(homeHook); err != nil {
 		t.Fatal("still write user hooks")
+	}
+}
+
+func TestEventHasPlexusHook(t *testing.T) {
+	hm := map[string]any{
+		"PreToolUse": []any{
+			map[string]any{"hooks": []any{
+				map[string]any{"type": "command", "command": `"/tmp/bin/plexus" --hook --source grok`},
+			}},
+		},
+	}
+	if !EventHasPlexusHook(hm, "PreToolUse") || EventHasPlexusHook(hm, "Stop") {
+		t.Fatal("event")
+	}
+	EnsureEventHook(hm, "Stop", CommandGroup(`"/tmp/bin/plexus" --hook --source grok`, 2))
+	if !EventHasPlexusHook(hm, "Stop") {
+		t.Fatal("ensure")
+	}
+	EnsureEventHook(hm, "PreToolUse", CommandGroup(`"/tmp/bin/plexus" --hook --source grok`, 2))
+	if len(jsonx.Slice(hm["PreToolUse"])) != 1 {
+		t.Fatalf("dup %v", hm["PreToolUse"])
+	}
+}
+
+func TestMigratePlexusHTTP(t *testing.T) {
+	hm := map[string]any{
+		"PreToolUse": []any{
+			map[string]any{"hooks": []any{
+				map[string]any{"type": "http", "url": "http://127.0.0.1:7733/hook", "timeout": 2},
+			}},
+		},
+	}
+	MigratePlexusHTTP(hm, `/tmp/bin/plexus`, "grok")
+	hook := jsonx.AsMap(jsonx.Slice(jsonx.AsMap(jsonx.Slice(hm["PreToolUse"])[0])["hooks"])[0])
+	if jsonx.Str(hook["type"]) != "command" {
+		t.Fatalf("%v", hook)
+	}
+	if jsonx.Str(hook["url"]) != "" {
+		t.Fatalf("url %v", hook)
+	}
+	if jsonx.Str(hook["command"]) != `"/tmp/bin/plexus" --hook --source grok` {
+		t.Fatalf("command %q", hook["command"])
 	}
 }
 

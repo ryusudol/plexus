@@ -6,7 +6,6 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/ryusudol/plexus/internal/config"
 	"github.com/ryusudol/plexus/internal/jsonx"
 	"github.com/ryusudol/plexus/internal/paths"
 )
@@ -30,6 +29,17 @@ func HasPlexusLauncher(blob string) bool {
 
 func HasPlexusHook(blob string) bool {
 	return strings.Contains(blob, "plexus-hook") || strings.Contains(blob, "--hook")
+}
+
+func EventHasPlexusHook(hooks map[string]any, event string) bool {
+	blob, _ := json.Marshal(hooks[event])
+	return HasPlexusHook(string(blob))
+}
+
+func EnsureEventHook(hooks map[string]any, event string, group any) {
+	if !EventHasPlexusHook(hooks, event) {
+		PushGroup(hooks, event, group)
+	}
 }
 
 func HasHTTPHook(blob string) bool {
@@ -70,6 +80,44 @@ func MigrateLauncherCommands(hooks map[string]any, bin string) {
 				if next != cmd {
 					hm["command"] = next
 				}
+			}
+		}
+	}
+}
+
+// MigratePlexusHTTP rewrites Plexus HTTP observers to command hooks.
+// Grok Build rejects http:// URLs (SSRF: HTTPS only), so a leftover
+// 127.0.0.1:7733/hook entry fails on every tool call.
+func MigratePlexusHTTP(hooks map[string]any, bin, source string) {
+	if source == "" {
+		source = "grok"
+	}
+	for _, raw := range hooks {
+		groups, ok := raw.([]any)
+		if !ok {
+			continue
+		}
+		for _, g := range groups {
+			gm := jsonx.AsMap(g)
+			if gm == nil {
+				continue
+			}
+			list := jsonx.Slice(gm["hooks"])
+			for _, h := range list {
+				hm := jsonx.AsMap(h)
+				if hm == nil {
+					continue
+				}
+				if jsonx.Str(hm["type"]) != "http" {
+					continue
+				}
+				url := jsonx.Str(hm["url"])
+				if !strings.Contains(url, "127.0.0.1:7733/hook") && !strings.Contains(url, "localhost:7733/hook") {
+					continue
+				}
+				hm["type"] = "command"
+				hm["command"] = quote(bin) + " --hook --source " + source
+				delete(hm, "url")
 			}
 		}
 	}
@@ -136,10 +184,9 @@ func SaveFile(file string, spec any) error {
 	return os.WriteFile(file, append(b, '\n'), 0o644)
 }
 
-func InstallGrok(root, bin string) string {
+func InstallGrok(root, bin string) {
 	hooksDir := filepath.Join(paths.Home(), ".grok", "hooks")
 	_ = os.MkdirAll(hooksDir, 0o755)
-	url := config.Origin() + "/hook"
 	spec := map[string]any{
 		"hooks": map[string]any{
 			"SessionStart": []any{
@@ -149,10 +196,12 @@ func InstallGrok(root, bin string) string {
 					},
 				},
 			},
+			// Grok blocks HTTP hooks on http:// (SSRF: HTTPS only), so the
+			// observer must be a command hook. Codex uses the same shape.
 			"PreToolUse": []any{
 				map[string]any{
 					"hooks": []any{
-						map[string]any{"type": "http", "url": url, "timeout": 2},
+						map[string]any{"type": "command", "command": quote(bin) + " --hook --source grok", "timeout": 2},
 					},
 				},
 			},
@@ -176,5 +225,4 @@ func InstallGrok(root, bin string) string {
 			_ = os.Remove(filepath.Join(dir, stale))
 		}
 	}
-	return url
 }

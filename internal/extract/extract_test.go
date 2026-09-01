@@ -181,12 +181,12 @@ func TestClaudeAndCodexVisits(t *testing.T) {
 			"arguments": "*** Begin Patch\n*** Update File: /repo/web/app.js\n@@\n-a\n+b\n*** End Patch\n",
 		},
 	}, SessionHint{SessionID: "s1", Cwd: "/repo"})
-	if codex == nil || FolderPath(&codex.Visit) != "/repo/web" || FilePath(&codex.Visit) != "/repo/web/app.js" {
+	if len(codex) != 1 || FolderPath(&codex[0].Visit) != "/repo/web" || FilePath(&codex[0].Visit) != "/repo/web/app.js" {
 		t.Fatalf("%v", codex)
 	}
-	if VisitFromCodexRecord(map[string]any{
+	if len(VisitFromCodexRecord(map[string]any{
 		"payload": map[string]any{"type": "local_shell_call", "action": map[string]any{"command": []any{"ls", "/repo"}}},
-	}, SessionHint{}) != nil {
+	}, SessionHint{})) != 0 {
 		t.Fatal("shell")
 	}
 }
@@ -339,6 +339,105 @@ func TestApplyPatchAndToolArgs(t *testing.T) {
 	})
 	if locs == nil || FolderPath(locs) != "/repo/src" {
 		t.Fatalf("locations %v", locs)
+	}
+}
+
+func TestVisitFromCodexItemCompleted(t *testing.T) {
+	hint := SessionHint{SessionID: "s1", Cwd: "/repo"}
+	read := VisitFromCodexRecord(map[string]any{
+		"type":      "event_msg",
+		"timestamp": "2026-08-29T00:00:00.000Z",
+		"payload": map[string]any{
+			"type": "item_completed",
+			"item": map[string]any{
+				"type": "CommandExecution",
+				"id":   "exec-1",
+				"cwd":  "file:///repo",
+				"parsed_cmd": []any{
+					map[string]any{"type": "read", "path": "web/app.js", "name": "app.js"},
+					map[string]any{"type": "unknown", "cmd": "pwd"},
+					map[string]any{"type": "list_files", "path": "hooks"},
+					map[string]any{"type": "list_files", "path": "/repo/lib"},
+				},
+			},
+		},
+	}, hint)
+	if len(read) != 2 {
+		t.Fatalf("visits %d %+v", len(read), read)
+	}
+	if FilePath(&read[0].Visit) != "/repo/web/app.js" {
+		t.Fatalf("read %q", FilePath(&read[0].Visit))
+	}
+	if FolderPath(&read[1].Visit) != "/repo/lib" || read[1].Visit.FilePath != nil {
+		t.Fatalf("list %+v", read[1].Visit)
+	}
+
+	local := VisitFromCodexRecord(map[string]any{
+		"payload": map[string]any{
+			"type": "item_completed",
+			"item": map[string]any{
+				"type": "CommandExecution",
+				"id":   "exec-local",
+				"cwd":  "file://localhost/repo",
+				"parsed_cmd": []any{
+					map[string]any{"type": "read", "path": "web/app.js"},
+				},
+			},
+		},
+	}, hint)
+	if len(local) != 1 || FilePath(&local[0].Visit) != "/repo/web/app.js" {
+		t.Fatalf("localhost %v", local)
+	}
+	if local[0].Visit.WorkspaceRoot == nil || *local[0].Visit.WorkspaceRoot != "/repo" {
+		t.Fatalf("cwd %v", local[0].Visit.WorkspaceRoot)
+	}
+
+	search := VisitFromCodexRecord(map[string]any{
+		"payload": map[string]any{
+			"type": "item_completed",
+			"item": map[string]any{
+				"type": "CommandExecution",
+				"id":   "exec-2",
+				"cwd":  "file:///repo",
+				"parsed_cmd": []any{
+					map[string]any{"type": "search", "path": "src/main.ts", "query": "TODO"},
+					map[string]any{"type": "search", "path": ".cursor"},
+				},
+			},
+		},
+	}, hint)
+	if len(search) != 1 || FilePath(&search[0].Visit) != "/repo/src/main.ts" {
+		t.Fatalf("search %+v", search)
+	}
+
+	changed := VisitFromCodexRecord(map[string]any{
+		"payload": map[string]any{
+			"type": "item_completed",
+			"item": map[string]any{
+				"type": "FileChange",
+				"id":   "exec-3",
+				"changes": map[string]any{
+					"/repo/cmd/main.go": map[string]any{"type": "update"},
+					"/repo/lib/a.ts":    map[string]any{"type": "update"},
+				},
+			},
+		},
+	}, hint)
+	if len(changed) != 2 {
+		t.Fatalf("changes %d", len(changed))
+	}
+	files := map[string]bool{}
+	for _, item := range changed {
+		files[FilePath(&item.Visit)] = true
+	}
+	if !files["/repo/cmd/main.go"] || !files["/repo/lib/a.ts"] {
+		t.Fatalf("%v", files)
+	}
+
+	if len(VisitFromCodexRecord(map[string]any{
+		"payload": map[string]any{"type": "custom_tool_call", "name": "exec", "input": "text(await tools.exec_command({cmd:\"ls\"}))"},
+	}, hint)) != 0 {
+		t.Fatal("exec")
 	}
 }
 

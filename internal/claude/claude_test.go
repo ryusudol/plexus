@@ -3,6 +3,7 @@ package claude
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -94,11 +95,10 @@ func TestInstallIdempotent(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("CLAUDE_CONFIG_DIR", home)
 	bin := filepath.Join(t.TempDir(), "bin", "plexus")
-	url := "http://127.0.0.1:7733/hook"
-	if err := Install(bin, url); err != nil {
+	if err := Install(bin); err != nil {
 		t.Fatal(err)
 	}
-	if err := Install(bin, url); err != nil {
+	if err := Install(bin); err != nil {
 		t.Fatal(err)
 	}
 	spec := hooks.LoadFile(filepath.Join(home, "settings.json"))
@@ -106,12 +106,61 @@ func TestInstallIdempotent(t *testing.T) {
 	if len(jsonx.Slice(hm["SessionStart"])) != 1 {
 		t.Fatalf("dup start %v", hm["SessionStart"])
 	}
+	for _, event := range []string{"PreToolUse", "UserPromptSubmit", "Stop"} {
+		if len(jsonx.Slice(hm[event])) != 1 {
+			t.Fatalf("dup %s %v", event, hm[event])
+		}
+	}
+	blob, _ := os.ReadFile(filepath.Join(home, "settings.json"))
+	if !hooks.HasPlexusLauncher(string(blob)) || !hooks.HasPlexusHook(string(blob)) {
+		t.Fatalf("%s", blob)
+	}
+	if strings.Contains(string(blob), "127.0.0.1:7733/hook") || strings.Contains(string(blob), `"type": "http"`) {
+		t.Fatalf("http leftover %s", blob)
+	}
+}
+
+func TestInstallMigratesHTTPHook(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("CLAUDE_CONFIG_DIR", home)
+	bin := filepath.Join(t.TempDir(), "bin", "plexus")
+	file := filepath.Join(home, "settings.json")
+	if err := os.MkdirAll(home, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	old := `{
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Read|Write|Edit|Glob|Grep|NotebookEdit",
+        "hooks": [{"type": "http", "url": "http://127.0.0.1:7733/hook", "timeout": 2}]
+      }
+    ]
+  }
+}
+`
+	if err := os.WriteFile(file, []byte(old), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := Install(bin); err != nil {
+		t.Fatal(err)
+	}
+	blob, err := os.ReadFile(file)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(blob), "127.0.0.1:7733/hook") {
+		t.Fatalf("still http %s", blob)
+	}
+	spec := hooks.LoadFile(file)
+	hm := jsonx.AsMap(spec["hooks"])
 	if len(jsonx.Slice(hm["PreToolUse"])) != 1 {
 		t.Fatalf("dup pre %v", hm["PreToolUse"])
 	}
-	blob, _ := os.ReadFile(filepath.Join(home, "settings.json"))
-	if !hooks.HasPlexusLauncher(string(blob)) || !hooks.HasHTTPHook(string(blob)) {
-		t.Fatalf("%s", blob)
+	for _, event := range []string{"PreToolUse", "UserPromptSubmit", "Stop"} {
+		if !hooks.EventHasPlexusHook(hm, event) {
+			t.Fatalf("missing %s %v", event, hm[event])
+		}
 	}
 }
 

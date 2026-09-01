@@ -46,18 +46,8 @@ func assertHookSilent(t *testing.T, rec *httptest.ResponseRecorder) {
 	if rec.Code != 200 {
 		t.Fatal(rec.Code)
 	}
-	var hook map[string]any
-	if json.Unmarshal(rec.Body.Bytes(), &hook) != nil {
-		t.Fatal(rec.Body.String())
-	}
-	if _, ok := hook["decision"]; ok {
-		t.Fatalf("decision %v", hook)
-	}
-	if _, ok := hook["hookSpecificOutput"]; ok {
-		t.Fatalf("hookSpecificOutput %v", hook)
-	}
-	if rec.Body.String() != "{}" {
-		t.Fatalf("%s", rec.Body.Bytes())
+	if rec.Body.Len() != 0 {
+		t.Fatalf("hook body %q", rec.Body.Bytes())
 	}
 }
 

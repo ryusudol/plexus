@@ -42,6 +42,24 @@ func TestJSONFileAndPeek(t *testing.T) {
 	if PeekJSONL(filepath.Join(dir, "missing.jsonl"), 4) != nil {
 		t.Fatal("missing")
 	}
+
+	big := filepath.Join(dir, "big.jsonl")
+	pad := make([]byte, 20*1024)
+	for i := range pad {
+		pad[i] = 'a'
+	}
+	line := `{"type":"session_meta","payload":{"cwd":"/repo","pad":"` + string(pad) + `"}}` + "\n" + `{"type":"skip"}` + "\n"
+	if err := os.WriteFile(big, []byte(line), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	bigRows := PeekJSONL(big, 1)
+	if len(bigRows) != 1 {
+		t.Fatalf("big %v", bigRows)
+	}
+	payload, _ := bigRows[0]["payload"].(map[string]any)
+	if payload["cwd"] != "/repo" {
+		t.Fatalf("cwd %v", payload)
+	}
 }
 
 func TestPlexusDirMigratesExplore(t *testing.T) {
